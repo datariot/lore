@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
-members = []
+members = [
+    "crates/lore-core",
+]
 
 [workspace.package]
 edition = "2024"
