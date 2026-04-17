@@ -1,0 +1,22 @@
+[package]
+name = "lore-search"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "BM25-lite ranker over Lore's heading index."
+
+[dependencies]
+lore-core = { workspace = true }
+lore-index = { workspace = true }
+serde = { workspace = true }
+unicode-segmentation = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+lore-parse = { workspace = true }
+
+[[bench]]
+name = "search"
+harness = false

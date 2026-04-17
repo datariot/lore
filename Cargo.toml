@@ -4,6 +4,7 @@ members = [
     "crates/lore-core",
     "crates/lore-parse",
     "crates/lore-index",
+    "crates/lore-search",
 ]
 
 [workspace.package]
