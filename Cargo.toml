@@ -6,6 +6,7 @@ members = [
     "crates/lore-index",
     "crates/lore-search",
     "crates/lore-watch",
+    "services/lore",
 ]
 
 [workspace.package]
