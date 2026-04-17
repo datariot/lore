@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/lore-core",
+    "crates/lore-parse",
 ]
 
 [workspace.package]
