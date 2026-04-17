@@ -1,0 +1,17 @@
+[package]
+name = "lore-watch"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Debounced filesystem watcher used by Lore's incremental re-index."
+
+[dependencies]
+lore-core = { workspace = true }
+notify = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

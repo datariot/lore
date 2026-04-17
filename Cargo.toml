@@ -5,6 +5,7 @@ members = [
     "crates/lore-parse",
     "crates/lore-index",
     "crates/lore-search",
+    "crates/lore-watch",
 ]
 
 [workspace.package]
