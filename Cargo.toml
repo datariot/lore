@@ -1,0 +1,68 @@
+[workspace]
+resolver = "2"
+members = []
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/datariot/lore"
+authors = ["David Allen <david@datariot.io>"]
+
+[workspace.dependencies]
+# internal
+lore-core = { path = "crates/lore-core" }
+lore-parse = { path = "crates/lore-parse" }
+lore-index = { path = "crates/lore-index" }
+lore-search = { path = "crates/lore-search" }
+lore-watch = { path = "crates/lore-watch" }
+
+# async + runtime
+tokio = { version = "1", features = ["full"] }
+
+# serde
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# errors + tracing
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# collections
+dashmap = "6"
+hashbrown = "0.14"
+
+# markdown
+pulldown-cmark = "0.12"
+gray_matter = "0.2"
+
+# mcp
+rmcp = { version = "0.8", features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
+schemars = "1"
+
+# http
+axum = "0.7"
+tower = "0.5"
+
+# cli + fs
+clap = { version = "4", features = ["derive"] }
+ignore = "0.4"
+notify = "6"
+
+# io primitives
+memmap2 = "0.9"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+# unicode
+unicode-segmentation = "1"
+regex = "1"
+
+# dev
+proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3"
+
+[profile.release]
+debug = 1
+lto = "thin"
