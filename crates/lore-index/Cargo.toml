@@ -1,0 +1,27 @@
+[package]
+name = "lore-index"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Heading-tree index for markdown corpora."
+
+[dependencies]
+lore-core = { workspace = true }
+lore-parse = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hashbrown = { workspace = true }
+xxhash-rust = { workspace = true }
+thiserror = { workspace = true }
+unicode-segmentation = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "build"
+harness = false
