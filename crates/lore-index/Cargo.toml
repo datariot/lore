@@ -16,6 +16,7 @@ hashbrown = { workspace = true }
 xxhash-rust = { workspace = true }
 thiserror = { workspace = true }
 unicode-segmentation = { workspace = true }
+rust-stemmers = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -45,6 +45,8 @@ lore watch -r /path/to/your/vault
 
 The MCP endpoint is at `http://127.0.0.1:7331/mcp` by default. Point any MCP-compatible client at it.
 
+> **Upgrading from a pre-stemming build?** The on-disk index format moved from `lore-index-v1` to `lore-index-v2` when Porter stemming landed. Old `.lore/index.json` files refuse to load with a clear message; re-run `lore index <root>` to rebuild.
+
 ## MCP tools
 
 | Tool | What it does |
@@ -53,7 +55,7 @@ The MCP endpoint is at `http://127.0.0.1:7331/mcp` by default. Point any MCP-com
 | `table_of_contents` | Heading tree for a corpus or a single document. Supports `max_depth` and optional frontmatter. |
 | `get_section` | Retrieve a section by heading path or node id. O(1) byte-range slice via mmap. |
 | `get_by_path` | Convenience form: `file.md#Heading > Subheading`. |
-| `search` | BM25 ranking over titles, path segments, and summaries. Access-count boost. |
+| `search` | BM25 ranking over titles, path segments, and summaries. Porter-stemmed (so `alarm` finds `alarms`). `-term` excludes. `group_by: "doc"` collapses same-document hits. Access-count boost. |
 | `backlinks` | Every section that links *to* a target — precomputed at index time. |
 | `recent_hot` | Top-N sections by access count. Agent usage as the importance signal. |
 | `neighbors` | Parent, prev/next sibling, children of a node. Navigate one hop at a time. |

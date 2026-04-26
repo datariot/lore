@@ -65,6 +65,9 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 unicode-segmentation = "1"
 regex = "1"
 
+# search
+rust-stemmers = "1"
+
 # dev
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }

@@ -319,6 +319,44 @@ mod tests {
     }
 
     #[test]
+    fn stemming_unifies_inflectional_variants() {
+        // Doc indexed as `alarms` must surface for query `alarm` and
+        // vice versa; same for the deploy/deployed pair. This is the
+        // alert/alarm gap from the dogfood pass — the inverted-index
+        // key is the Porter stem, so the two sides agree by
+        // construction.
+        let corpus = corpus_of(&[
+            ("alarm.md", "# Critical Alarms\n\nbody.\n"),
+            ("deploy.md", "# Deployed Pipelines\n\nbody.\n"),
+            ("decoy.md", "# Documentation\n\nunrelated.\n"),
+        ]);
+
+        // Query a different surface form than the one in the index.
+        let by_alarm = search(&corpus, "alarm", 10);
+        assert!(
+            by_alarm
+                .iter()
+                .any(|h| corpus.doc(h.doc).unwrap().rel_path == "alarm.md"),
+            "query 'alarm' should reach 'Critical Alarms' via stemming"
+        );
+        let by_alarming = search(&corpus, "alarming", 10);
+        assert!(
+            by_alarming
+                .iter()
+                .any(|h| corpus.doc(h.doc).unwrap().rel_path == "alarm.md"),
+            "query 'alarming' should reach 'Critical Alarms'"
+        );
+
+        let by_deploy = search(&corpus, "deploy", 10);
+        assert!(
+            by_deploy
+                .iter()
+                .any(|h| corpus.doc(h.doc).unwrap().rel_path == "deploy.md"),
+            "query 'deploy' should reach 'Deployed Pipelines'"
+        );
+    }
+
+    #[test]
     fn negation_excludes_matching_nodes() {
         let corpus = corpus_of(&[
             ("a.md", "# Kafka Connect\n\nstreaming.\n"),
