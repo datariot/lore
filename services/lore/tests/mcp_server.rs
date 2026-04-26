@@ -280,6 +280,83 @@ async fn mcp_server_end_to_end() {
     assert_eq!(hits[0]["level"], 1);
     assert_eq!(hits[0]["path"][0], "Architecture");
 
+    // 6b) search with group_by: "doc" — the term "introduction" matches the
+    // H1 of intro.md by title and several descendant sections via the
+    // path-segments field. Section mode returns >1 hit; doc mode collapses
+    // them into one primary with secondary_hits populated.
+    let (section_resp, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "search",
+            "arguments": {
+                "source_id": source_id,
+                "query": "introduction",
+                "limit": 10
+            }
+        }),
+        &session,
+    )
+    .await;
+    let section_hits = section_resp["result"]["structuredContent"]["hits"]
+        .as_array()
+        .unwrap();
+    assert!(
+        section_hits.len() > 1,
+        "fixture should produce multiple same-doc hits in section mode"
+    );
+    for h in section_hits {
+        assert_eq!(h["rel_path"], "docs/intro.md");
+        // Default mode must omit secondary_hits entirely (skip_serializing_if).
+        assert!(
+            h.get("secondary_hits").is_none() || h["secondary_hits"].as_array().unwrap().is_empty()
+        );
+    }
+
+    let (doc_resp, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "search",
+            "arguments": {
+                "source_id": source_id,
+                "query": "introduction",
+                "group_by": "doc",
+                "limit": 10,
+                "secondary_limit": 5
+            }
+        }),
+        &session,
+    )
+    .await;
+    let doc_hits = doc_resp["result"]["structuredContent"]["hits"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        doc_hits.len(),
+        1,
+        "doc mode collapses same-doc hits into one primary"
+    );
+    assert_eq!(doc_hits[0]["rel_path"], "docs/intro.md");
+    let secondary = doc_hits[0]["secondary_hits"].as_array().unwrap();
+    assert!(
+        !secondary.is_empty() && secondary.len() < section_hits.len(),
+        "secondary_hits should carry the rest of the same-doc matches",
+    );
+    let primary_score = doc_hits[0]["score"].as_f64().unwrap();
+    for s in secondary {
+        assert!(
+            s["score"].as_f64().unwrap() <= primary_score,
+            "secondary outscored primary"
+        );
+        assert!(
+            s.get("rel_path").is_none(),
+            "secondary hits elide rel_path (it's on the primary)"
+        );
+    }
+
     // 7) backlinks — the README has `[[architecture]]`, so the Architecture
     // section's document stem should appear as a backlink target.
     let (bl_resp, session) = rpc(

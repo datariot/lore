@@ -59,6 +59,70 @@ pub fn search(corpus: &CorpusIndex, query: &str, limit: usize) -> Vec<SearchHit>
     search_bm25(corpus, query, limit, &Ranker::default())
 }
 
+/// One row per matching document: the top-scoring section as `primary`, plus
+/// up to `secondary_per_doc` additional matching sections from the same
+/// document. Useful when an agent searches a narrow term that concentrates
+/// in one file — it sees the whole doc's structure instead of N rows of the
+/// same file.
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupedSearchHit {
+    pub primary: SearchHit,
+    pub secondary: Vec<SearchHit>,
+}
+
+/// Group the BM25 result set by document. The first hit per document
+/// becomes the primary; up to `secondary_per_doc` additional same-document
+/// hits are attached, in score order. `doc_limit` caps the total document
+/// count returned. Uses the default `Ranker`.
+pub fn search_grouped(
+    corpus: &CorpusIndex,
+    query: &str,
+    doc_limit: usize,
+    secondary_per_doc: usize,
+) -> Vec<GroupedSearchHit> {
+    search_grouped_bm25(
+        corpus,
+        query,
+        doc_limit,
+        secondary_per_doc,
+        &Ranker::default(),
+    )
+}
+
+pub fn search_grouped_bm25(
+    corpus: &CorpusIndex,
+    query: &str,
+    doc_limit: usize,
+    secondary_per_doc: usize,
+    ranker: &Ranker,
+) -> Vec<GroupedSearchHit> {
+    let all = score_all(corpus, query, ranker);
+    if all.is_empty() {
+        return Vec::new();
+    }
+    // Single linear pass: the first time we see a doc, start a group; the
+    // next `secondary_per_doc` hits with the same doc append to its
+    // secondary list; further hits drop. Stop once we've started
+    // `doc_limit` groups.
+    let mut groups: Vec<GroupedSearchHit> = Vec::new();
+    let mut idx_by_doc: HashMap<DocId, usize> = HashMap::new();
+    for hit in all {
+        if let Some(&i) = idx_by_doc.get(&hit.doc) {
+            if groups[i].secondary.len() < secondary_per_doc {
+                groups[i].secondary.push(hit);
+            }
+        } else if groups.len() < doc_limit {
+            idx_by_doc.insert(hit.doc, groups.len());
+            groups.push(GroupedSearchHit {
+                primary: hit,
+                secondary: Vec::new(),
+            });
+        }
+        // else: doc_limit reached and this hit is for a new doc — drop.
+    }
+    groups
+}
+
 /// Split a raw query string into positive and negative tokens.
 ///
 /// A whitespace-separated word starting with `-` is a negation: subsequent
@@ -89,6 +153,16 @@ pub fn search_bm25(
     limit: usize,
     ranker: &Ranker,
 ) -> Vec<SearchHit> {
+    let mut scored = score_all(corpus, query, ranker);
+    scored.truncate(limit);
+    scored
+}
+
+/// Run the BM25 scoring pass and return every matched node sorted by
+/// score, descending. No truncation. Shared by `search_bm25` (which
+/// truncates to a section limit) and `search_grouped_bm25` (which
+/// truncates by document count after grouping).
+fn score_all(corpus: &CorpusIndex, query: &str, ranker: &Ranker) -> Vec<SearchHit> {
     let (q_tokens, neg_tokens) = parse_query(query);
     if q_tokens.is_empty() {
         return Vec::new();
@@ -177,7 +251,6 @@ pub fn search_bm25(
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    scored.truncate(limit);
     scored
 }
 
@@ -283,6 +356,99 @@ mod tests {
         let (pos, neg) = parse_query("- kafka");
         assert!(neg.is_empty());
         assert_eq!(pos, vec!["kafka".to_string()]);
+    }
+
+    #[test]
+    fn grouped_collapses_same_doc_to_one_primary_with_secondaries() {
+        // Single document with three matching sections; two unrelated docs
+        // contribute one match each. Without grouping the narrow corpus
+        // produces 3 hits from the same doc; grouped, doc_a appears once
+        // with two secondaries.
+        let corpus = corpus_of(&[
+            (
+                "a.md",
+                "# Andrew\n\n## Background\n\nAndrew here.\n\n## Notes\n\nAndrew there.\n",
+            ),
+            ("b.md", "# Andrew the Great\n\nbrief mention.\n"),
+            ("c.md", "# Unrelated\n\nempty.\n"),
+        ]);
+
+        let flat = search(&corpus, "andrew", 10);
+        let from_a = flat
+            .iter()
+            .filter(|h| corpus.doc(h.doc).unwrap().rel_path == "a.md")
+            .count();
+        assert!(from_a >= 2, "fixture should have multiple matches in a.md");
+
+        let grouped = search_grouped(&corpus, "andrew", 10, 3);
+        let docs: Vec<&str> = grouped
+            .iter()
+            .map(|g| corpus.doc(g.primary.doc).unwrap().rel_path.as_str())
+            .collect();
+        assert!(docs.contains(&"a.md"), "a.md must appear once: {docs:?}");
+        // Each doc appears at most once as a primary.
+        let mut sorted = docs.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            docs.len(),
+            "duplicate docs in primary set: {docs:?}"
+        );
+        // The a.md group should carry secondary hits drawn from the same doc.
+        let a_group = grouped
+            .iter()
+            .find(|g| corpus.doc(g.primary.doc).unwrap().rel_path == "a.md")
+            .unwrap();
+        assert!(
+            !a_group.secondary.is_empty(),
+            "a.md primary should have secondary hits"
+        );
+        for sec in &a_group.secondary {
+            assert_eq!(sec.doc, a_group.primary.doc, "secondary doc mismatch");
+            assert!(
+                sec.score <= a_group.primary.score,
+                "secondary outscored primary"
+            );
+        }
+    }
+
+    #[test]
+    fn grouped_doc_limit_caps_unique_documents() {
+        let corpus = corpus_of(&[
+            ("a.md", "# Topic\n\nbody.\n"),
+            ("b.md", "# Topic\n\nbody.\n"),
+            ("c.md", "# Topic\n\nbody.\n"),
+        ]);
+        let two = search_grouped(&corpus, "topic", 2, 0);
+        assert_eq!(two.len(), 2, "doc_limit=2 must cap at 2 documents");
+        for g in &two {
+            assert!(
+                g.secondary.is_empty(),
+                "secondary_per_doc=0 → no secondaries"
+            );
+        }
+    }
+
+    #[test]
+    fn grouped_secondary_limit_truncates_extras() {
+        // Five matching sections in one doc; secondary_per_doc=2 keeps top
+        // two beyond the primary, drops the rest.
+        let mut src = String::from("# Root\n\nhit.\n");
+        for i in 0..5 {
+            src.push_str(&format!("\n## Section {i}\n\nhit hit hit.\n"));
+        }
+        let corpus = corpus_of(&[("a.md", src.as_str())]);
+        let grouped = search_grouped(&corpus, "hit", 10, 2);
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].secondary.len(), 2);
+    }
+
+    #[test]
+    fn grouped_empty_query_returns_empty() {
+        let corpus = corpus_of(&[("a.md", "# Hi\n")]);
+        assert!(search_grouped(&corpus, "", 10, 3).is_empty());
+        assert!(search_grouped(&corpus, "-only", 10, 3).is_empty());
     }
 
     #[test]

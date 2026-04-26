@@ -125,22 +125,65 @@ pub struct LinkInfo {
 // search
 // -----------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupBy {
+    /// One row per matching heading node — the default. Same-document
+    /// hits produce multiple rows. Useful when sections are independently
+    /// useful or the agent wants the highest-scoring N regardless of
+    /// document boundaries.
+    #[default]
+    Section,
+    /// One row per matching document, with the top-scoring section as the
+    /// primary hit and up to `secondary_limit` additional same-document
+    /// sections nested under it.
+    Doc,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SearchRequest {
     pub source_id: String,
     pub query: String,
+    /// Section mode: max sections returned. Doc mode: max documents
+    /// returned (each with its own secondary list).
     #[serde(default = "default_limit")]
     pub limit: usize,
+    /// Result granularity. Defaults to `section` (legacy behavior).
+    #[serde(default)]
+    pub group_by: GroupBy,
+    /// In `group_by: "doc"` mode, max additional same-document sections to
+    /// nest under each primary. Ignored in section mode.
+    #[serde(default = "default_secondary_limit")]
+    pub secondary_limit: usize,
 }
 
 fn default_limit() -> usize {
     20
 }
 
+fn default_secondary_limit() -> usize {
+    3
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SearchHit {
     pub rel_path: String,
     pub doc_id: u32,
+    pub node_id: u32,
+    pub level: u8,
+    pub path: Vec<String>,
+    pub summary: String,
+    pub score: f32,
+    /// In `group_by: "doc"` mode, additional matching sections from the
+    /// same document, ranked by score. Empty in section mode.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secondary_hits: Vec<SectionHit>,
+}
+
+/// A same-document secondary match. `rel_path` and `doc_id` are elided —
+/// they're identical to the parent `SearchHit`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SectionHit {
     pub node_id: u32,
     pub level: u8,
     pub path: Vec<String>,

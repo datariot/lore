@@ -17,11 +17,11 @@ use crate::config::index_path;
 use crate::mcp::registry::CorpusRegistry;
 use crate::mcp::tools::{
     AddSourceRequest, AddSourceResponse, Backlink, BacklinksRequest, BacklinksResponse,
-    DocumentSummary, GetByPathRequest, GetSectionRequest, HotNode, HotRequest, HotResponse,
-    LinkInfo, ListDocumentsRequest, ListDocumentsResponse, ListSourcesResponse, NeighborRef,
-    NeighborsRequest, NeighborsResponse, ResolvedNode, SearchHit, SearchRequest, SearchResponse,
-    SectionResponse, SourceSummary, TocDocument, TocRequest, TocResponse, flatten_toc,
-    frontmatter_matches, to_heading_path,
+    DocumentSummary, GetByPathRequest, GetSectionRequest, GroupBy, HotNode, HotRequest,
+    HotResponse, LinkInfo, ListDocumentsRequest, ListDocumentsResponse, ListSourcesResponse,
+    NeighborRef, NeighborsRequest, NeighborsResponse, ResolvedNode, SearchHit, SearchRequest,
+    SearchResponse, SectionHit, SectionResponse, SourceSummary, TocDocument, TocRequest,
+    TocResponse, flatten_toc, frontmatter_matches, to_heading_path,
 };
 
 #[derive(Clone)]
@@ -227,7 +227,7 @@ impl LoreServer {
     // ---- search -------------------------------------------------------------
 
     #[tool(
-        description = "BM25 keyword search over heading titles, path segments, and the per-section first-sentence summary. Returns ranked hits with a summary line each. Tokens are lowercased; English stopwords and tokens shorter than two characters are skipped. Prefix a token with `-` to exclude any node containing it (e.g., `kafka -lambda`). No phrase or proximity operators."
+        description = "BM25 keyword search over heading titles, path segments, and the per-section first-sentence summary. Returns ranked hits with a summary line each. Tokens are lowercased; English stopwords and tokens shorter than two characters are skipped. Prefix a token with `-` to exclude any node containing it (e.g., `kafka -lambda`). No phrase or proximity operators. Set `group_by` to `\"doc\"` to collapse same-document hits into one primary plus up to `secondary_limit` (default 3) nested same-document sections — useful for narrow queries that concentrate in a single file."
     )]
     async fn search(
         &self,
@@ -236,23 +236,58 @@ impl LoreServer {
         let handle = self.corpus_handle(&req.source_id)?;
         let corpus = handle.read();
 
-        let raw = lore_search::search_naive(&corpus, &req.query, req.limit);
-        let hits = raw
-            .into_iter()
-            .filter_map(|h| {
-                let doc = corpus.doc(h.doc)?;
-                let node = doc.node(h.node)?;
-                Some(SearchHit {
-                    rel_path: doc.rel_path.clone(),
-                    doc_id: h.doc.0,
-                    node_id: h.node.0,
-                    level: node.level,
-                    path: node.path.0.clone(),
-                    summary: node.summary.clone(),
-                    score: h.score,
+        let hits = match req.group_by {
+            GroupBy::Section => lore_search::search(&corpus, &req.query, req.limit)
+                .into_iter()
+                .filter_map(|h| {
+                    let doc = corpus.doc(h.doc)?;
+                    let node = doc.node(h.node)?;
+                    Some(SearchHit {
+                        rel_path: doc.rel_path.clone(),
+                        doc_id: h.doc.0,
+                        node_id: h.node.0,
+                        level: node.level,
+                        path: node.path.0.clone(),
+                        summary: node.summary.clone(),
+                        score: h.score,
+                        secondary_hits: Vec::new(),
+                    })
                 })
-            })
-            .collect();
+                .collect(),
+            GroupBy::Doc => {
+                lore_search::search_grouped(&corpus, &req.query, req.limit, req.secondary_limit)
+                    .into_iter()
+                    .filter_map(|g| {
+                        let doc = corpus.doc(g.primary.doc)?;
+                        let primary_node = doc.node(g.primary.node)?;
+                        let secondary_hits = g
+                            .secondary
+                            .into_iter()
+                            .filter_map(|s| {
+                                let n = doc.node(s.node)?;
+                                Some(SectionHit {
+                                    node_id: s.node.0,
+                                    level: n.level,
+                                    path: n.path.0.clone(),
+                                    summary: n.summary.clone(),
+                                    score: s.score,
+                                })
+                            })
+                            .collect();
+                        Some(SearchHit {
+                            rel_path: doc.rel_path.clone(),
+                            doc_id: g.primary.doc.0,
+                            node_id: g.primary.node.0,
+                            level: primary_node.level,
+                            path: primary_node.path.0.clone(),
+                            summary: primary_node.summary.clone(),
+                            score: g.primary.score,
+                            secondary_hits,
+                        })
+                    })
+                    .collect()
+            }
+        };
 
         Ok(Json(SearchResponse {
             source_id: corpus.source.to_string(),

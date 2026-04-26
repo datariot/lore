@@ -14,7 +14,10 @@
 
 mod bm25;
 
-pub use bm25::{Ranker, SearchHit, search, search_bm25};
+pub use bm25::{
+    GroupedSearchHit, Ranker, SearchHit, parse_query, search, search_bm25, search_grouped,
+    search_grouped_bm25,
+};
 
 // Phase 3 called this `search_naive`; keep the alias so service code
 // doesn't have to switch in lock-step with the ranker rewrite.
