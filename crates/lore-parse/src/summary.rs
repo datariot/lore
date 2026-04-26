@@ -77,7 +77,7 @@ fn flatten_text(body: &str) -> String {
                     out.push(' ');
                 }
             }
-            Event::End(TagEnd::Paragraph) => {
+            Event::End(TagEnd::Paragraph) | Event::End(TagEnd::Heading(_)) => {
                 if !out.ends_with(' ') {
                     out.push(' ');
                 }
@@ -116,5 +116,21 @@ mod tests {
     fn empty_returns_empty() {
         assert_eq!(first_sentence(""), "");
         assert_eq!(first_sentence("   \n\n"), "");
+    }
+
+    #[test]
+    fn child_heading_does_not_concatenate_with_following_paragraph() {
+        // A parent node's content_range can include child headings. When we
+        // flatten that body the child heading title must not stick to the
+        // sentence that follows it.
+        let body = "## Overview\n\nThis document outlines the metrics.\n";
+        let s = first_sentence(body);
+        assert!(
+            !s.contains("OverviewThis"),
+            "expected separator between heading and paragraph, got {s:?}"
+        );
+        // The first sentence is the heading title (terminated by paragraph
+        // end), since `Overview` has no sentence punctuation.
+        assert!(s.starts_with("Overview"));
     }
 }

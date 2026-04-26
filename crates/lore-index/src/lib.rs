@@ -15,7 +15,7 @@ mod serialize;
 
 pub use access::AccessCounter;
 pub use builder::build_document;
-pub use corpus::{CorpusIndex, DocId, Field, FieldLengths, Posting, tokenize};
+pub use corpus::{CorpusIndex, DocId, Field, FieldLengths, Posting, canonical_link_keys, tokenize};
 pub use model::{DocumentIndex, HeadingNode};
 pub use query::{NodeRef, Traversal};
 pub use serialize::{load_index, write_index};

@@ -264,6 +264,38 @@ async fn mcp_server_end_to_end() {
     .await;
     let bls = &bl_resp["result"]["structuredContent"]["backlinks"];
     assert!(!bls.as_array().unwrap().is_empty());
+    let bare_count = bls.as_array().unwrap().len();
+
+    // 7b) backlinks canonicalization — querying with the qualified path,
+    // the `.md` extension, or a `#fragment` should return the same set as
+    // the bare basename. The lookup must run `canonical_link_keys` on the
+    // query (not just lowercase) so all spellings of one logical target
+    // resolve identically.
+    for variant in [
+        "docs/architecture",
+        "docs/architecture.md",
+        "Architecture",
+        "architecture#Components",
+    ] {
+        let (resp, sess) = rpc(
+            &client,
+            &url,
+            "tools/call",
+            json!({
+                "name": "backlinks",
+                "arguments": {"source_id": source_id, "target": variant}
+            }),
+            &session,
+        )
+        .await;
+        let _ = sess;
+        let v = &resp["result"]["structuredContent"]["backlinks"];
+        let count = v.as_array().expect("backlinks array").len();
+        assert_eq!(
+            count, bare_count,
+            "variant {variant:?} returned {count} backlinks, expected {bare_count} (canonicalized match with bare target)"
+        );
+    }
 
     // 8) neighbors — siblings/children of `Introduction > Purpose`
     let (nb_resp, session) = rpc(

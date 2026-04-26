@@ -2,8 +2,10 @@
 
 use std::path::PathBuf;
 
+use std::collections::HashSet;
+
 use lore_core::{Error, LinkKind, NodeId, SourceId};
-use lore_index::{DocId, DocumentIndex, HeadingNode};
+use lore_index::{DocId, DocumentIndex, HeadingNode, canonical_link_keys};
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, ProtocolVersion, ServerCapabilities, ServerInfo};
@@ -210,20 +212,37 @@ impl LoreServer {
     ) -> Result<Json<BacklinksResponse>, McpError> {
         let handle = self.corpus_handle(&req.source_id)?;
         let corpus = handle.read();
-        let key = req.target.to_lowercase();
-        let hits = corpus.backlinks.get(&key).cloned().unwrap_or_default();
-        let mut out = Vec::with_capacity(hits.len().min(req.limit));
-        for (did, nid) in hits.into_iter().take(req.limit) {
-            let Some(doc) = corpus.doc(did) else { continue };
-            let Some(node) = doc.node(nid) else { continue };
-            out.push(Backlink {
-                rel_path: doc.rel_path.clone(),
-                doc_id: did.0,
-                node_id: nid.0,
-                level: node.level,
-                path: node.path.0.clone(),
-                summary: node.summary.clone(),
-            });
+        // Index time stores each link under multiple canonical keys
+        // (basename, with/without extension, with/without #fragment). Run the
+        // same canonicalization on the query so all link spellings of the
+        // same logical target return the same set.
+        let mut seen: HashSet<(DocId, NodeId)> = HashSet::new();
+        let mut out: Vec<Backlink> = Vec::new();
+        for key in canonical_link_keys(&req.target) {
+            let Some(postings) = corpus.backlinks.get(&key) else {
+                continue;
+            };
+            for &(did, nid) in postings {
+                if !seen.insert((did, nid)) {
+                    continue;
+                }
+                let Some(doc) = corpus.doc(did) else { continue };
+                let Some(node) = doc.node(nid) else { continue };
+                out.push(Backlink {
+                    rel_path: doc.rel_path.clone(),
+                    doc_id: did.0,
+                    node_id: nid.0,
+                    level: node.level,
+                    path: node.path.0.clone(),
+                    summary: node.summary.clone(),
+                });
+                if out.len() >= req.limit {
+                    break;
+                }
+            }
+            if out.len() >= req.limit {
+                break;
+            }
         }
         Ok(Json(BacklinksResponse {
             source_id: corpus.source.to_string(),
