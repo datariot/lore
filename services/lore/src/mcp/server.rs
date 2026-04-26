@@ -227,7 +227,7 @@ impl LoreServer {
     // ---- search -------------------------------------------------------------
 
     #[tool(
-        description = "Keyword search over heading titles and path segments. Ranked; returns a summary line per hit. Phase 4 upgrades this to BM25 over a trigram-filtered candidate set."
+        description = "BM25 keyword search over heading titles, path segments, and the per-section first-sentence summary. Returns ranked hits with a summary line each. Tokens are lowercased; English stopwords and tokens shorter than two characters are skipped. Prefix a token with `-` to exclude any node containing it (e.g., `kafka -lambda`). No phrase or proximity operators."
     )]
     async fn search(
         &self,

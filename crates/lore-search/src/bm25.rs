@@ -59,15 +59,51 @@ pub fn search(corpus: &CorpusIndex, query: &str, limit: usize) -> Vec<SearchHit>
     search_bm25(corpus, query, limit, &Ranker::default())
 }
 
+/// Split a raw query string into positive and negative tokens.
+///
+/// A whitespace-separated word starting with `-` is a negation: subsequent
+/// scoring proceeds against the rest of the query, then any node matched by
+/// a negation is dropped from the result. A bare `-` or a hyphen inside a
+/// word (`kafka-connect`) is not a negation. Negation tokens go through the
+/// same normalization (`tokenize`) as positives so casing and stopword
+/// rules stay consistent.
+pub fn parse_query(query: &str) -> (Vec<String>, Vec<String>) {
+    let mut pos = Vec::new();
+    let mut neg = Vec::new();
+    for word in query.split_whitespace() {
+        if let Some(rest) = word.strip_prefix('-') {
+            if rest.is_empty() {
+                continue;
+            }
+            neg.extend(tokenize(rest));
+        } else {
+            pos.extend(tokenize(word));
+        }
+    }
+    (pos, neg)
+}
+
 pub fn search_bm25(
     corpus: &CorpusIndex,
     query: &str,
     limit: usize,
     ranker: &Ranker,
 ) -> Vec<SearchHit> {
-    let q_tokens = tokenize(query);
+    let (q_tokens, neg_tokens) = parse_query(query);
     if q_tokens.is_empty() {
         return Vec::new();
+    }
+
+    // Collect every (doc, node) that any negative token matches. A node is
+    // excluded from results if it appears in this set, regardless of how
+    // strongly the positive terms scored it.
+    let mut excluded: std::collections::HashSet<(DocId, NodeId)> = std::collections::HashSet::new();
+    for token in &neg_tokens {
+        if let Some(postings) = corpus.inverted.get(token) {
+            for p in postings {
+                excluded.insert((p.doc, p.node));
+            }
+        }
     }
 
     // In Lore, BM25's "document" unit is a *heading node*, not a file.
@@ -110,6 +146,11 @@ pub fn search_bm25(
             let field_score = idf * tf * (ranker.k1 + 1.0) / (tf + ranker.k1 * norm);
             *accum.entry((p.doc, p.node)).or_insert(0.0) += field_score * weight;
         }
+    }
+
+    // Drop nodes that any negative term matched.
+    if !excluded.is_empty() {
+        accum.retain(|key, _| !excluded.contains(key));
     }
 
     // Access-count boost: log1p so heavy hitters don't drown out exact
@@ -202,6 +243,46 @@ mod tests {
         assert!(hits_caching[0].score > 0.0);
         assert!(hits_overview[0].score > 0.0);
         assert!(hits_caching[0].score > hits_overview[0].score);
+    }
+
+    #[test]
+    fn negation_excludes_matching_nodes() {
+        let corpus = corpus_of(&[
+            ("a.md", "# Kafka Connect\n\nstreaming.\n"),
+            ("b.md", "# Kafka Lambda\n\nfunction.\n"),
+        ]);
+        let plain = search(&corpus, "kafka", 10);
+        assert_eq!(plain.len(), 2, "both docs match positive 'kafka'");
+
+        let negated = search(&corpus, "kafka -lambda", 10);
+        assert_eq!(negated.len(), 1, "lambda doc must be excluded");
+        let top_doc = corpus.doc(negated[0].doc).unwrap();
+        assert_eq!(top_doc.rel_path, "a.md");
+    }
+
+    #[test]
+    fn negation_only_query_returns_no_hits() {
+        let corpus = corpus_of(&[("a.md", "# Anything\n\nbody.\n")]);
+        assert!(search(&corpus, "-anything", 10).is_empty());
+    }
+
+    #[test]
+    fn negation_does_not_split_words_on_internal_hyphen() {
+        // `kafka-connect` is a single shell word; the leading character is
+        // `k`, not `-`. Internal hyphens must stay inside the term.
+        let (pos, neg) = parse_query("kafka-connect");
+        assert!(neg.is_empty());
+        assert!(
+            !pos.is_empty(),
+            "internal-hyphen token should produce positives"
+        );
+    }
+
+    #[test]
+    fn negation_leading_dash_alone_is_ignored() {
+        let (pos, neg) = parse_query("- kafka");
+        assert!(neg.is_empty());
+        assert_eq!(pos, vec!["kafka".to_string()]);
     }
 
     #[test]
