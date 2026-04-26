@@ -37,6 +37,12 @@ pub struct TocRequest {
     /// every document in the corpus.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rel_path: Option<String>,
+    /// Optional folder-prefix filter on `rel_path`. When set, only documents
+    /// whose path starts with this prefix are returned. Use forward slashes;
+    /// the comparison is byte-wise after stripping any leading `./`.
+    /// Ignored when `rel_path` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_prefix: Option<String>,
     /// Maximum heading depth to include. `None` means no limit. Agents should
     /// start at depth 2 or 3 and drill down with a second call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -268,6 +274,90 @@ pub struct NeighborsResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_sibling: Option<NeighborRef>,
     pub children: Vec<NeighborRef>,
+}
+
+// -----------------------------------------------------------------------------
+// list_documents
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListDocumentsRequest {
+    pub source_id: String,
+    /// Optional folder-prefix filter on `rel_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_prefix: Option<String>,
+    /// Optional frontmatter equality filters. Each `key: value` pair must
+    /// match the document's frontmatter — for scalar fields, JSON equality;
+    /// for array fields, the filter value must appear as an element. All
+    /// filters AND together. Pass `{}` or omit for no frontmatter filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontmatter: Option<serde_json::Map<String, serde_json::Value>>,
+    /// When true, attach each document's frontmatter to the response.
+    #[serde(default)]
+    pub include_frontmatter: bool,
+    #[serde(default = "default_doc_list_limit")]
+    pub limit: usize,
+}
+
+fn default_doc_list_limit() -> usize {
+    1_000
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DocumentSummary {
+    pub rel_path: String,
+    pub doc_id: u32,
+    /// Title of the first level-1 heading, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub node_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontmatter: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListDocumentsResponse {
+    pub source_id: String,
+    pub documents: Vec<DocumentSummary>,
+    /// `true` when `documents.len() == limit` and more matches existed.
+    pub truncated: bool,
+}
+
+/// Match a request filter map against a document's frontmatter value.
+///
+/// Semantics: every `(key, expected)` pair in `filters` must be satisfied by
+/// the document's frontmatter. A document with no frontmatter never matches a
+/// non-empty filter set. A scalar `expected` matches an array value via
+/// element-equality (e.g. `tags: "project"` matches `tags: [project, work]`).
+/// Otherwise `==` on JSON values.
+pub(crate) fn frontmatter_matches(
+    filters: &serde_json::Map<String, serde_json::Value>,
+    fm: Option<&serde_json::Value>,
+) -> bool {
+    if filters.is_empty() {
+        return true;
+    }
+    let Some(serde_json::Value::Object(map)) = fm else {
+        return false;
+    };
+    for (key, expected) in filters {
+        let Some(actual) = map.get(key) else {
+            return false;
+        };
+        match (actual, expected) {
+            (serde_json::Value::Array(items), exp) if !exp.is_array() => {
+                if !items.iter().any(|v| v == exp) {
+                    return false;
+                }
+            }
+            (a, e) => {
+                if a != e {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 // -----------------------------------------------------------------------------

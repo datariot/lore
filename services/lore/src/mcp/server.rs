@@ -17,10 +17,11 @@ use crate::config::index_path;
 use crate::mcp::registry::CorpusRegistry;
 use crate::mcp::tools::{
     AddSourceRequest, AddSourceResponse, Backlink, BacklinksRequest, BacklinksResponse,
-    GetByPathRequest, GetSectionRequest, HotNode, HotRequest, HotResponse, LinkInfo,
-    ListSourcesResponse, NeighborRef, NeighborsRequest, NeighborsResponse, ResolvedNode, SearchHit,
-    SearchRequest, SearchResponse, SectionResponse, SourceSummary, TocDocument, TocRequest,
-    TocResponse, flatten_toc, to_heading_path,
+    DocumentSummary, GetByPathRequest, GetSectionRequest, HotNode, HotRequest, HotResponse,
+    LinkInfo, ListDocumentsRequest, ListDocumentsResponse, ListSourcesResponse, NeighborRef,
+    NeighborsRequest, NeighborsResponse, ResolvedNode, SearchHit, SearchRequest, SearchResponse,
+    SectionResponse, SourceSummary, TocDocument, TocRequest, TocResponse, flatten_toc,
+    frontmatter_matches, to_heading_path,
 };
 
 #[derive(Clone)]
@@ -70,6 +71,58 @@ impl LoreServer {
         Ok(Json(ListSourcesResponse { sources }))
     }
 
+    // ---- list_documents -----------------------------------------------------
+
+    #[tool(
+        description = "List documents in a corpus, optionally filtered by `path_prefix` and by frontmatter equality (e.g. `{\"type\":\"moc\"}` or `{\"tags\":\"project\"}` to match an array element). Cheaper than `table_of_contents` when the agent only needs to discover which files exist or filter by metadata."
+    )]
+    async fn list_documents(
+        &self,
+        Parameters(req): Parameters<ListDocumentsRequest>,
+    ) -> Result<Json<ListDocumentsResponse>, McpError> {
+        let handle = self.corpus_handle(&req.source_id)?;
+        let corpus = handle.read();
+
+        let prefix = req.path_prefix.as_deref();
+        let filters = req.frontmatter.as_ref();
+
+        let mut matched = 0usize;
+        let mut documents: Vec<DocumentSummary> = Vec::new();
+        for (i, doc) in corpus.documents.iter().enumerate() {
+            if let Some(p) = prefix
+                && !doc.rel_path.starts_with(p)
+            {
+                continue;
+            }
+            if let Some(f) = filters
+                && !frontmatter_matches(f, doc.frontmatter.as_ref())
+            {
+                continue;
+            }
+            matched += 1;
+            if documents.len() >= req.limit {
+                continue;
+            }
+            documents.push(DocumentSummary {
+                rel_path: doc.rel_path.clone(),
+                doc_id: i as u32,
+                title: doc.nodes.first().map(|n| n.title.clone()),
+                node_count: doc.nodes.len(),
+                frontmatter: if req.include_frontmatter {
+                    doc.frontmatter.clone()
+                } else {
+                    None
+                },
+            });
+        }
+
+        Ok(Json(ListDocumentsResponse {
+            source_id: corpus.source.to_string(),
+            truncated: matched > documents.len(),
+            documents,
+        }))
+    }
+
     // ---- table_of_contents --------------------------------------------------
 
     #[tool(
@@ -97,12 +150,19 @@ impl LoreServer {
                     req.include_frontmatter,
                 )]
             }
-            None => corpus
-                .documents
-                .iter()
-                .enumerate()
-                .map(|(i, d)| doc_to_toc(i as u32, d, req.max_depth, req.include_frontmatter))
-                .collect(),
+            None => {
+                let prefix = req.path_prefix.as_deref();
+                corpus
+                    .documents
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, d)| match prefix {
+                        Some(p) => d.rel_path.starts_with(p),
+                        None => true,
+                    })
+                    .map(|(i, d)| doc_to_toc(i as u32, d, req.max_depth, req.include_frontmatter))
+                    .collect()
+            }
         };
 
         Ok(Json(TocResponse {

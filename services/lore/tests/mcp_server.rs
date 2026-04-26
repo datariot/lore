@@ -153,6 +153,7 @@ async fn mcp_server_end_to_end() {
         .collect();
     for expected in [
         "list_sources",
+        "list_documents",
         "table_of_contents",
         "get_section",
         "search",
@@ -198,6 +199,36 @@ async fn mcp_server_end_to_end() {
         for entry in doc["entries"].as_array().unwrap() {
             assert!(entry["level"].as_u64().unwrap() <= 2);
         }
+    }
+    let total_docs = docs.as_array().unwrap().len();
+    assert!(total_docs >= 3, "fixture has 3 documents");
+
+    // 4b) table_of_contents with path_prefix — only documents under
+    // `docs/` should come back. README.md at the root must be excluded.
+    let (toc_filtered, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "table_of_contents",
+            "arguments": {
+                "source_id": dir.path().file_name().unwrap().to_str().unwrap(),
+                "path_prefix": "docs/"
+            }
+        }),
+        &session,
+    )
+    .await;
+    let filtered_docs = toc_filtered["result"]["structuredContent"]["documents"]
+        .as_array()
+        .unwrap();
+    assert!(
+        !filtered_docs.is_empty() && filtered_docs.len() < total_docs,
+        "path_prefix should narrow the result set",
+    );
+    for d in filtered_docs {
+        let rp = d["rel_path"].as_str().unwrap();
+        assert!(rp.starts_with("docs/"), "leaked non-matching doc: {rp}");
     }
 
     // 5) get_section by heading_path
@@ -317,6 +348,110 @@ async fn mcp_server_end_to_end() {
     assert_eq!(nb_struct["parent"]["title"], "Introduction");
     let children = nb_struct["children"].as_array().unwrap();
     assert!(children.iter().any(|c| c["title"] == "Why"));
+
+    // 8b) list_documents — no filter returns every doc; path_prefix narrows;
+    // frontmatter filters match scalars and array elements identically.
+    let (all_docs, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "list_documents",
+            "arguments": {"source_id": source_id, "include_frontmatter": true}
+        }),
+        &session,
+    )
+    .await;
+    let all = all_docs["result"]["structuredContent"]["documents"]
+        .as_array()
+        .unwrap();
+    assert_eq!(all.len(), 3, "fixture has 3 documents");
+    assert!(all.iter().any(|d| d["frontmatter"].is_object()));
+
+    let (under_docs, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "list_documents",
+            "arguments": {"source_id": source_id, "path_prefix": "docs/"}
+        }),
+        &session,
+    )
+    .await;
+    let under = under_docs["result"]["structuredContent"]["documents"]
+        .as_array()
+        .unwrap();
+    assert_eq!(under.len(), 2);
+    for d in under {
+        assert!(d["rel_path"].as_str().unwrap().starts_with("docs/"));
+    }
+
+    let (tagged, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "list_documents",
+            "arguments": {
+                "source_id": source_id,
+                "frontmatter": {"tags": "test-fixture"}
+            }
+        }),
+        &session,
+    )
+    .await;
+    let tagged_docs = tagged["result"]["structuredContent"]["documents"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        tagged_docs.len(),
+        1,
+        "tags array element match should pick exactly README.md"
+    );
+    assert_eq!(tagged_docs[0]["rel_path"], "README.md");
+
+    let (titled, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "list_documents",
+            "arguments": {
+                "source_id": source_id,
+                "frontmatter": {"title": "Mini KB"}
+            }
+        }),
+        &session,
+    )
+    .await;
+    let titled_docs = titled["result"]["structuredContent"]["documents"]
+        .as_array()
+        .unwrap();
+    assert_eq!(titled_docs.len(), 1);
+    assert_eq!(titled_docs[0]["rel_path"], "README.md");
+
+    let (none, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "list_documents",
+            "arguments": {
+                "source_id": source_id,
+                "frontmatter": {"missing-key": "anything"}
+            }
+        }),
+        &session,
+    )
+    .await;
+    assert_eq!(
+        none["result"]["structuredContent"]["documents"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
 
     // 9) get_by_path using qualified form.
     let (by_path_resp, session) = rpc(
