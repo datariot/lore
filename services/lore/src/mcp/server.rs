@@ -368,7 +368,7 @@ impl LoreServer {
                 }
             }
         }
-        all.sort_by(|a, b| b.2.cmp(&a.2));
+        all.sort_by_key(|t| std::cmp::Reverse(t.2));
         all.truncate(req.limit);
         let nodes = all
             .into_iter()
