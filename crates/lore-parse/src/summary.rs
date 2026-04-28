@@ -72,15 +72,11 @@ fn flatten_text(body: &str) -> String {
             }
             Event::Text(t) if !in_code_block => out.push_str(&t),
             Event::Code(t) if !in_code_block => out.push_str(&t),
-            Event::SoftBreak | Event::HardBreak => {
-                if !out.ends_with(' ') {
-                    out.push(' ');
-                }
+            Event::SoftBreak | Event::HardBreak if !out.ends_with(' ') => {
+                out.push(' ');
             }
-            Event::End(TagEnd::Paragraph) | Event::End(TagEnd::Heading(_)) => {
-                if !out.ends_with(' ') {
-                    out.push(' ');
-                }
+            Event::End(TagEnd::Paragraph | TagEnd::Heading(_)) if !out.ends_with(' ') => {
+                out.push(' ');
             }
             _ => {}
         }
