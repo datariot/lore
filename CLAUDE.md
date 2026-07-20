@@ -98,6 +98,7 @@ When adding a tool:
 - **`pulldown-cmark` offset iteration** gives byte positions into the *body* passed to the parser. We always add `body_offset` to shift back into the original source.
 - **Wiki-links in code fences** must be excluded — see `build_code_mask` in `lore-parse/src/links.rs`.
 - **`access_count` is `#[serde(skip)]`** so the on-disk index is stable. Counters live only in memory.
+- **The watch integration test needs FSEvents delivery.** Sandboxed shells (e.g. Claude Code's default Bash sandbox) block it, and the test fails with "watcher may not be firing" even though the code is fine. Run it unsandboxed before concluding anything is broken.
 
 ## Substack article
 
