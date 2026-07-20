@@ -21,7 +21,7 @@ use crate::mcp::tools::{
     HotResponse, LinkInfo, ListDocumentsRequest, ListDocumentsResponse, ListSourcesResponse,
     NeighborRef, NeighborsRequest, NeighborsResponse, ResolvedNode, SearchHit, SearchRequest,
     SearchResponse, SectionHit, SectionResponse, SourceSummary, TocDocument, TocRequest,
-    TocResponse, flatten_toc, frontmatter_matches, to_heading_path,
+    TocResponse, frontmatter_matches, to_heading_path, toc_tree,
 };
 
 #[derive(Clone)]
@@ -126,7 +126,7 @@ impl LoreServer {
     // ---- table_of_contents --------------------------------------------------
 
     #[tool(
-        description = "Return the heading tree for a corpus — optionally narrowed to one document and capped at a given depth. The preferred first call to understand what's in a source."
+        description = "Return the heading tree for a corpus — a nested `roots[].children[]` structure per document, optionally narrowed to one document and capped at a given depth. Nodes pruned by `max_depth` keep `has_children: true`, signalling there is more to drill into. The preferred first call to understand what's in a source."
     )]
     async fn table_of_contents(
         &self,
@@ -205,7 +205,7 @@ impl LoreServer {
             rel_path: req.rel_path,
             node_id: resolved.node_id.0,
             level: resolved.node.level,
-            path: resolved.node.path.0.clone(),
+            heading_path: resolved.node.path.0.clone(),
             byte_range: [range.start, range.end],
             content: content.to_string(),
             outbound_links: resolved
@@ -247,7 +247,7 @@ impl LoreServer {
                         doc_id: h.doc.0,
                         node_id: h.node.0,
                         level: node.level,
-                        path: node.path.0.clone(),
+                        heading_path: node.path.0.clone(),
                         summary: node.summary.clone(),
                         score: h.score,
                         secondary_hits: Vec::new(),
@@ -268,7 +268,7 @@ impl LoreServer {
                                 Some(SectionHit {
                                     node_id: s.node.0,
                                     level: n.level,
-                                    path: n.path.0.clone(),
+                                    heading_path: n.path.0.clone(),
                                     summary: n.summary.clone(),
                                     score: s.score,
                                 })
@@ -279,7 +279,7 @@ impl LoreServer {
                             doc_id: g.primary.doc.0,
                             node_id: g.primary.node.0,
                             level: primary_node.level,
-                            path: primary_node.path.0.clone(),
+                            heading_path: primary_node.path.0.clone(),
                             summary: primary_node.summary.clone(),
                             score: g.primary.score,
                             secondary_hits,
@@ -328,7 +328,7 @@ impl LoreServer {
                     doc_id: did.0,
                     node_id: nid.0,
                     level: node.level,
-                    path: node.path.0.clone(),
+                    heading_path: node.path.0.clone(),
                     summary: node.summary.clone(),
                 });
                 if out.len() >= req.limit {
@@ -379,7 +379,7 @@ impl LoreServer {
                     doc_id: did.0,
                     node_id: node.id.0,
                     level: node.level,
-                    path: node.path.0.clone(),
+                    heading_path: node.path.0.clone(),
                     summary: node.summary.clone(),
                     access_count: count,
                 })
@@ -552,7 +552,7 @@ fn doc_to_toc(
     TocDocument {
         rel_path: doc.rel_path.clone(),
         doc_id,
-        entries: flatten_toc(doc, max_depth),
+        roots: toc_tree(doc, max_depth),
         frontmatter: if include_frontmatter {
             doc.frontmatter.clone()
         } else {
@@ -649,7 +649,7 @@ fn to_ref(n: &HeadingNode) -> NeighborRef {
         node_id: n.id.0,
         level: n.level,
         title: n.title.clone(),
-        path: n.path.0.clone(),
+        heading_path: n.path.0.clone(),
     }
 }
 

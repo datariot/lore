@@ -71,6 +71,8 @@ If you add a new derived index or a new MCP tool, write:
 
 Nine tools in `services/lore/src/mcp/server.rs`, all routed by `#[tool_router]`. Request/response types live in `mcp/tools.rs` so the server file stays readable. Tools take `Parameters<Req>` and return `Json<Resp>`.
 
+Naming rules for wire fields: the heading-segment list is always `heading_path` — in requests *and* responses; `rel_path` is always the file path. Never introduce a bare `path` field. `table_of_contents` returns the tree nested (`roots[].children[]`), not a flat list.
+
 When adding a tool:
 
 1. Define `FooRequest` / `FooResponse` in `mcp/tools.rs` with `#[derive(Serialize, Deserialize, JsonSchema)]`.
@@ -96,6 +98,7 @@ When adding a tool:
 - **`pulldown-cmark` offset iteration** gives byte positions into the *body* passed to the parser. We always add `body_offset` to shift back into the original source.
 - **Wiki-links in code fences** must be excluded — see `build_code_mask` in `lore-parse/src/links.rs`.
 - **`access_count` is `#[serde(skip)]`** so the on-disk index is stable. Counters live only in memory.
+- **The watch integration test needs FSEvents delivery.** Sandboxed shells (e.g. Claude Code's default Bash sandbox) block it, and the test fails with "watcher may not be firing" even though the code is fine. Run it unsandboxed before concluding anything is broken.
 
 ## Substack article
 

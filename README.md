@@ -47,12 +47,14 @@ The MCP endpoint is at `http://127.0.0.1:7331/mcp` by default. Point any MCP-com
 
 > **Upgrading from a pre-stemming build?** The on-disk index format moved from `lore-index-v1` to `lore-index-v2` when Porter stemming landed. Old `.lore/index.json` files refuse to load with a clear message; re-run `lore index <root>` to rebuild.
 
+> **Wire-format break (2026-07):** every tool response now names the heading-segment list `heading_path` (previously `path`), matching the request parameter of the same name, and `table_of_contents` returns a nested `roots[].children[]` tree instead of a flat `entries[]` array.
+
 ## MCP tools
 
 | Tool | What it does |
 |---|---|
 | `list_sources` | Every corpus Lore has loaded, with document and heading counts. |
-| `table_of_contents` | Heading tree for a corpus or a single document. Supports `max_depth` and optional frontmatter. |
+| `table_of_contents` | Heading tree for a corpus or a single document, as nested `roots[].children[]` — the wire format is the tree. Supports `max_depth` and optional frontmatter. |
 | `get_section` | Retrieve a section by heading path or node id. O(1) byte-range slice via mmap. |
 | `get_by_path` | Convenience form: `file.md#Heading > Subheading`. |
 | `search` | BM25 ranking over titles, path segments, and summaries. Porter-stemmed (so `alarm` finds `alarms`). `-term` excludes. `group_by: "doc"` collapses same-document hits. Access-count boost. |
