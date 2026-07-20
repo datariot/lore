@@ -440,6 +440,79 @@ async fn mcp_server_end_to_end() {
         );
     }
 
+    // 7c) backlinks with target_anchor — architecture.md's Data Flow section
+    // links `[[intro#Purpose]]`, so asking "who links to intro's Purpose
+    // section?" must return exactly that linking section, and the response
+    // must confirm which section the anchor resolved to.
+    let (anchor_resp, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "backlinks",
+            "arguments": {"source_id": source_id, "target": "intro", "target_anchor": "Purpose"}
+        }),
+        &session,
+    )
+    .await;
+    let sc = &anchor_resp["result"]["structuredContent"];
+    let resolved = sc["resolved_targets"].as_array().unwrap();
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0]["rel_path"], "docs/intro.md");
+    assert_eq!(
+        resolved[0]["heading_path"],
+        json!(["Introduction", "Purpose"])
+    );
+    let anchor_bls = sc["backlinks"].as_array().unwrap();
+    assert_eq!(
+        anchor_bls.len(),
+        1,
+        "only the [[intro#Purpose]] author links to the section"
+    );
+    assert_eq!(anchor_bls[0]["rel_path"], "docs/architecture.md");
+    assert_eq!(
+        anchor_bls[0]["heading_path"],
+        json!(["Architecture", "Data Flow"])
+    );
+    // Section scope must be strictly narrower than doc scope for `intro`
+    // (README links [[docs/intro]] without a fragment).
+    let (intro_doc_resp, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "backlinks",
+            "arguments": {"source_id": source_id, "target": "intro"}
+        }),
+        &session,
+    )
+    .await;
+    let intro_doc_count = intro_doc_resp["result"]["structuredContent"]["backlinks"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert!(
+        anchor_bls.len() < intro_doc_count,
+        "section scope ({}) must be narrower than doc scope ({intro_doc_count})",
+        anchor_bls.len()
+    );
+
+    // 7d) an anchor that matches no heading resolves to nothing.
+    let (miss_resp, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "backlinks",
+            "arguments": {"source_id": source_id, "target": "intro", "target_anchor": "Nope"}
+        }),
+        &session,
+    )
+    .await;
+    let sc = &miss_resp["result"]["structuredContent"];
+    assert!(sc.get("resolved_targets").is_none());
+    assert!(sc["backlinks"].as_array().unwrap().is_empty());
+
     // 8) neighbors — siblings/children of `Introduction > Purpose`
     let (nb_resp, session) = rpc(
         &client,
