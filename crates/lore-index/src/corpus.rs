@@ -95,6 +95,17 @@ pub struct CorpusIndex {
     /// Precomputed backlinks: target string -> nodes that link to it.
     #[serde(skip, default)]
     pub backlinks: HashMap<String, Vec<(DocId, NodeId)>>,
+    /// Section-level backlinks: a `[[Page#Heading]]` link whose fragment
+    /// resolved to a real heading is indexed under the *resolved* target
+    /// `(doc, node)`. Links whose target document or heading can't be found
+    /// in the corpus appear only in the document-level `backlinks` table.
+    #[serde(skip, default)]
+    pub section_backlinks: HashMap<(DocId, NodeId), Vec<(DocId, NodeId)>>,
+    /// Canonical spellings of each document's `rel_path` (basename, with and
+    /// without extension, …) → documents. Used to resolve a link target
+    /// string to the documents it could refer to.
+    #[serde(skip, default)]
+    pub doc_key_lookup: HashMap<String, Vec<DocId>>,
     /// Inverted index: normalized token → postings (one per field occurrence).
     #[serde(skip, default)]
     pub inverted: HashMap<String, Vec<Posting>>,
@@ -114,6 +125,8 @@ impl CorpusIndex {
             title_trigrams: HashMap::new(),
             path_to_doc: HashMap::new(),
             backlinks: HashMap::new(),
+            section_backlinks: HashMap::new(),
+            doc_key_lookup: HashMap::new(),
             inverted: HashMap::new(),
             field_lengths: FieldLengths::default(),
         }
@@ -132,7 +145,14 @@ impl CorpusIndex {
         self.title_trigrams.clear();
         self.path_to_doc.clear();
         self.backlinks.clear();
+        self.section_backlinks.clear();
+        self.doc_key_lookup.clear();
         self.inverted.clear();
+
+        // Fragment-carrying links can only be resolved once every document's
+        // canonical keys are registered, so they're collected here and
+        // resolved in a second pass below.
+        let mut fragment_links: Vec<(DocId, NodeId, String)> = Vec::new();
 
         let mut title_lens: Vec<Vec<u16>> = Vec::with_capacity(self.documents.len());
         let mut path_lens: Vec<Vec<u16>> = Vec::with_capacity(self.documents.len());
@@ -145,6 +165,9 @@ impl CorpusIndex {
         for (di, doc) in self.documents.iter().enumerate() {
             let did = DocId(di as u32);
             self.path_to_doc.insert(doc.rel_path.clone(), did);
+            for key in canonical_link_keys(&doc.rel_path) {
+                self.doc_key_lookup.entry(key).or_default().push(did);
+            }
             let mut doc_title = Vec::with_capacity(doc.nodes.len());
             let mut doc_path = Vec::with_capacity(doc.nodes.len());
             let mut doc_summary = Vec::with_capacity(doc.nodes.len());
@@ -171,6 +194,9 @@ impl CorpusIndex {
                 for link in &node.outbound_links {
                     for key in canonical_link_keys(&link.target) {
                         self.backlinks.entry(key).or_default().push((did, node.id));
+                    }
+                    if link.target.contains('#') {
+                        fragment_links.push((did, node.id, link.target.clone()));
                     }
                 }
 
@@ -200,6 +226,25 @@ impl CorpusIndex {
             summary_lens.push(doc_summary);
         }
 
+        for (did, nid, target) in fragment_links {
+            let Some(pos) = target.find('#') else {
+                continue;
+            };
+            let (doc_part, fragment) = (&target[..pos], target[pos + 1..].trim());
+            if fragment.is_empty() || fragment.starts_with('^') {
+                // Obsidian block references (`#^id`) don't map to headings.
+                continue;
+            }
+            for tdid in self.resolve_target_docs(doc_part) {
+                if let Some(tnid) = self.resolve_heading_anchor(tdid, fragment) {
+                    self.section_backlinks
+                        .entry((tdid, tnid))
+                        .or_default()
+                        .push((did, nid));
+                }
+            }
+        }
+
         let denom = total_nodes.max(1) as f32;
         self.field_lengths = FieldLengths {
             title: title_lens,
@@ -222,6 +267,52 @@ impl CorpusIndex {
 
     pub fn total_nodes(&self) -> usize {
         self.documents.iter().map(|d| d.nodes.len()).sum()
+    }
+
+    /// Documents a link-target string could refer to, most specific spelling
+    /// first: the exact (lowercased) target, then without extension, then by
+    /// basename. Returns the matches from the *first* spelling that hits, so
+    /// a qualified `docs/intro` never bleeds into an unrelated `other/intro`
+    /// the way a union over all spellings would. An empty target (`[[#H]]`
+    /// self-links have one) resolves to nothing.
+    pub fn resolve_target_docs(&self, target: &str) -> Vec<DocId> {
+        let lower = target.to_lowercase();
+        if lower.is_empty() {
+            return Vec::new();
+        }
+        let mut spellings: Vec<String> = vec![lower.clone()];
+        for suffix in [".md", ".markdown"] {
+            if let Some(stem) = lower.strip_suffix(suffix) {
+                spellings.push(stem.to_string());
+            }
+        }
+        let basename = lower.rsplit('/').next().unwrap_or(&lower).to_string();
+        if basename != lower {
+            spellings.push(basename.clone());
+            for suffix in [".md", ".markdown"] {
+                if let Some(stem) = basename.strip_suffix(suffix) {
+                    spellings.push(stem.to_string());
+                }
+            }
+        }
+        for spelling in spellings {
+            if let Some(docs) = self.doc_key_lookup.get(&spelling) {
+                return docs.clone();
+            }
+        }
+        Vec::new()
+    }
+
+    /// Resolve a `#fragment` against a document's headings the way Obsidian
+    /// does: case-insensitive match on the heading *title* (not the full
+    /// ancestry), first match in document order wins.
+    pub fn resolve_heading_anchor(&self, did: DocId, fragment: &str) -> Option<NodeId> {
+        let doc = self.doc(did)?;
+        let wanted = fragment.trim().to_lowercase();
+        doc.nodes
+            .iter()
+            .find(|n| n.title.to_lowercase() == wanted)
+            .map(|n| n.id)
     }
 }
 
@@ -436,6 +527,108 @@ mod tests {
     fn canonical_keys_handle_bare_stem() {
         let keys = canonical_link_keys("Page");
         assert_eq!(keys, vec!["page"]);
+    }
+
+    /// Corpus with `docs/intro.md` (Introduction > Purpose) plus one linking
+    /// document whose body is supplied by the test.
+    fn corpus_with_link(link_body: &str) -> CorpusIndex {
+        let mut corp = CorpusIndex::new(SourceId::new("k"), PathBuf::from("/t"));
+        let intro = build_document(
+            SourceId::new("k"),
+            "docs/intro.md",
+            "# Introduction\n\n## Purpose\n\nwhy\n\n## Scope\n\nwhat\n",
+        )
+        .unwrap();
+        let arch = build_document(
+            SourceId::new("k"),
+            "docs/arch.md",
+            &format!("# A\n\n{link_body}\n"),
+        )
+        .unwrap();
+        corp.push_document(intro);
+        corp.push_document(arch);
+        corp.rebuild_indices();
+        corp
+    }
+
+    #[test]
+    fn section_backlinks_resolve_fragment_to_heading() {
+        for spelling in [
+            "see [[intro#Purpose]].",
+            "see [[docs/intro#Purpose]].",
+            "see [[docs/intro.md#Purpose]].",
+            "see [[intro#purpose]].", // fragment match is case-insensitive
+        ] {
+            let corp = corpus_with_link(spelling);
+            let intro_did = DocId(0);
+            let purpose = corp
+                .resolve_heading_anchor(intro_did, "Purpose")
+                .expect("Purpose resolves");
+            let linkers = corp
+                .section_backlinks
+                .get(&(intro_did, purpose))
+                .unwrap_or_else(|| panic!("no section backlinks for {spelling:?}"));
+            assert_eq!(
+                linkers,
+                &vec![(DocId(1), NodeId(0))],
+                "spelling {spelling:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unresolvable_fragments_stay_out_of_section_table() {
+        // Unknown document, unknown heading, and block refs must not
+        // produce section entries — but the doc-level table still works.
+        for spelling in [
+            "see [[missing#Purpose]].",
+            "see [[intro#No Such Heading]].",
+            "see [[intro#^blockid]].",
+        ] {
+            let corp = corpus_with_link(spelling);
+            assert!(corp.section_backlinks.is_empty(), "spelling {spelling:?}");
+        }
+        let corp = corpus_with_link("see [[intro#No Such Heading]].");
+        assert!(
+            corp.backlinks.contains_key("intro"),
+            "doc-level lookup unaffected"
+        );
+    }
+
+    #[test]
+    fn qualified_target_does_not_bleed_into_same_basename() {
+        // Two docs share the basename `intro`. A link qualified with the
+        // folder must resolve only to that folder's document.
+        let mut corp = CorpusIndex::new(SourceId::new("k"), PathBuf::from("/t"));
+        corp.push_document(
+            build_document(SourceId::new("k"), "docs/intro.md", "# D\n\n## Purpose\n").unwrap(),
+        );
+        corp.push_document(
+            build_document(SourceId::new("k"), "other/intro.md", "# O\n\n## Purpose\n").unwrap(),
+        );
+        corp.push_document(
+            build_document(
+                SourceId::new("k"),
+                "a.md",
+                "# A\n\nsee [[docs/intro#Purpose]].\n",
+            )
+            .unwrap(),
+        );
+        corp.rebuild_indices();
+
+        let docs_purpose = corp.resolve_heading_anchor(DocId(0), "Purpose").unwrap();
+        let other_purpose = corp.resolve_heading_anchor(DocId(1), "Purpose").unwrap();
+        assert!(
+            corp.section_backlinks
+                .contains_key(&(DocId(0), docs_purpose))
+        );
+        assert!(
+            !corp
+                .section_backlinks
+                .contains_key(&(DocId(1), other_purpose))
+        );
+        // An unqualified spelling is ambiguous and resolves to both.
+        assert_eq!(corp.resolve_target_docs("intro"), vec![DocId(0), DocId(1)]);
     }
 
     #[test]

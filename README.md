@@ -58,7 +58,7 @@ The MCP endpoint is at `http://127.0.0.1:7331/mcp` by default. Point any MCP-com
 | `get_section` | Retrieve a section by heading path or node id. O(1) byte-range slice via mmap. |
 | `get_by_path` | Convenience form: `file.md#Heading > Subheading`. |
 | `search` | BM25 ranking over titles, path segments, and summaries. Porter-stemmed (so `alarm` finds `alarms`). `-term` excludes. `group_by: "doc"` collapses same-document hits. Access-count boost. |
-| `backlinks` | Every section that links *to* a target — precomputed at index time. |
+| `backlinks` | Every section that links *to* a target — precomputed at index time. `target_anchor` narrows to links aimed at one section (`[[Page#Heading]]`). |
 | `recent_hot` | Top-N sections by access count. Agent usage as the importance signal. |
 | `neighbors` | Parent, prev/next sibling, children of a node. Navigate one hop at a time. |
 | `add_source` | Register a new directory as a corpus. |
@@ -98,7 +98,7 @@ Plan target was **<10 ms p99 for search at 15K headings** — the inverted index
 Lore handles Obsidian-flavoured markdown natively:
 
 - **Frontmatter** is parsed as YAML and surfaced in `table_of_contents` when requested.
-- **Wiki-links** (`[[Page]]`, `[[Page|alias]]`, `[[folder/Page#Heading]]`) are extracted and indexed. Backlinks match by basename, so `[[arch]]` and `[[docs/arch.md#Caching]]` both find the same target.
+- **Wiki-links** (`[[Page]]`, `[[Page|alias]]`, `[[folder/Page#Heading]]`) are extracted and indexed. Backlinks match by basename, so `[[arch]]` and `[[docs/arch.md#Caching]]` both find the same target. `#Heading` fragments are resolved to their heading at index time, so backlinks can be queried at section granularity.
 - **Dataview blocks** are tagged with `kind: "dataview"` on the owning heading so agents know they're query results, not prose.
 - **Code-fenced wiki-links** are excluded — `[[example]]` inside a code block doesn't create a spurious link.
 

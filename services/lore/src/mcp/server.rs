@@ -299,7 +299,7 @@ impl LoreServer {
     // ---- backlinks ----------------------------------------------------------
 
     #[tool(
-        description = "Return every section that links *to* `target` inside the corpus. Precomputed at index time — O(1) lookup."
+        description = "Return every section that links *to* `target` inside the corpus. Precomputed at index time — O(1) lookup. Pass `target_anchor` (a heading title in the target document) to narrow to links aimed at that specific section, i.e. links authored as `[[target#anchor]]`; the response's `resolved_targets` confirms which section the anchor matched."
     )]
     async fn backlinks(
         &self,
@@ -307,6 +307,69 @@ impl LoreServer {
     ) -> Result<Json<BacklinksResponse>, McpError> {
         let handle = self.corpus_handle(&req.source_id)?;
         let corpus = handle.read();
+
+        // Section mode: resolve target + anchor to concrete (doc, node)
+        // pairs and read the section-level table built at index time.
+        if let Some(anchor) = req
+            .target_anchor
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+        {
+            // The anchor parameter wins over any `#fragment` in `target`.
+            let doc_part = req.target.split('#').next().unwrap_or(&req.target);
+            let mut resolved_targets = Vec::new();
+            let mut seen: HashSet<(DocId, NodeId)> = HashSet::new();
+            let mut out: Vec<Backlink> = Vec::new();
+            'targets: for tdid in corpus.resolve_target_docs(doc_part) {
+                let Some(tnid) = corpus.resolve_heading_anchor(tdid, anchor) else {
+                    continue;
+                };
+                let Some(tdoc) = corpus.doc(tdid) else {
+                    continue;
+                };
+                let Some(tnode) = tdoc.node(tnid) else {
+                    continue;
+                };
+                resolved_targets.push(crate::mcp::tools::ResolvedTarget {
+                    rel_path: tdoc.rel_path.clone(),
+                    doc_id: tdid.0,
+                    node_id: tnid.0,
+                    heading_path: tnode.path.0.clone(),
+                });
+                let postings = corpus
+                    .section_backlinks
+                    .get(&(tdid, tnid))
+                    .map(|v| v.as_slice())
+                    .unwrap_or_default();
+                for &(did, nid) in postings {
+                    if !seen.insert((did, nid)) {
+                        continue;
+                    }
+                    let Some(doc) = corpus.doc(did) else { continue };
+                    let Some(node) = doc.node(nid) else { continue };
+                    out.push(Backlink {
+                        rel_path: doc.rel_path.clone(),
+                        doc_id: did.0,
+                        node_id: nid.0,
+                        level: node.level,
+                        heading_path: node.path.0.clone(),
+                        summary: node.summary.clone(),
+                    });
+                    if out.len() >= req.limit {
+                        break 'targets;
+                    }
+                }
+            }
+            return Ok(Json(BacklinksResponse {
+                source_id: corpus.source.to_string(),
+                target: req.target,
+                target_anchor: Some(anchor.to_string()),
+                resolved_targets,
+                backlinks: out,
+            }));
+        }
+
         // Index time stores each link under multiple canonical keys
         // (basename, with/without extension, with/without #fragment). Run the
         // same canonicalization on the query so all link spellings of the
@@ -342,6 +405,8 @@ impl LoreServer {
         Ok(Json(BacklinksResponse {
             source_id: corpus.source.to_string(),
             target: req.target,
+            target_anchor: None,
+            resolved_targets: Vec::new(),
             backlinks: out,
         }))
     }

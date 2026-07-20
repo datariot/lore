@@ -241,8 +241,23 @@ pub struct BacklinksRequest {
     /// Link target string to look up — typically a document stem
     /// (`architecture` for `[[architecture]]`) or a `path#fragment` form.
     pub target: String,
+    /// Narrow to links aimed at one *section* of the target document: the
+    /// heading text as authored (`Purpose` for `[[intro#Purpose]]`), matched
+    /// case-insensitively. Only links written with a resolving `#fragment`
+    /// count. Omit for document-level backlinks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_anchor: Option<String>,
     #[serde(default = "default_limit")]
     pub limit: usize,
+}
+
+/// The section a `target` + `target_anchor` pair resolved to.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ResolvedTarget {
+    pub rel_path: String,
+    pub doc_id: u32,
+    pub node_id: u32,
+    pub heading_path: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -259,6 +274,13 @@ pub struct Backlink {
 pub struct BacklinksResponse {
     pub source_id: String,
     pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_anchor: Option<String>,
+    /// Sections the anchor resolved to — normally one; more when the target
+    /// spelling is ambiguous across documents. Empty in document-level mode
+    /// and when the anchor didn't match any heading.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_targets: Vec<ResolvedTarget>,
     pub backlinks: Vec<Backlink>,
 }
 
