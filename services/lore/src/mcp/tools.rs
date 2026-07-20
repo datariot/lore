@@ -58,19 +58,26 @@ pub struct TocEntry {
     pub node_id: u32,
     pub level: u8,
     pub title: String,
-    pub path: Vec<String>,
+    pub heading_path: Vec<String>,
+    /// True when the node has child headings in the document — even when
+    /// `max_depth` pruned them from `children`. An agent seeing
+    /// `has_children: true` with empty `children` should drill down.
     pub has_children: bool,
     /// Structural tag, when detected. `"dataview"` for Obsidian Dataview
     /// blocks; `None` for ordinary prose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// Child headings, nested. Empty for leaves and at the `max_depth` cap.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<TocEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TocDocument {
     pub rel_path: String,
     pub doc_id: u32,
-    pub entries: Vec<TocEntry>,
+    /// Top-level headings, each carrying its subtree in `children`.
+    pub roots: Vec<TocEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frontmatter: Option<serde_json::Value>,
 }
@@ -107,7 +114,7 @@ pub struct SectionResponse {
     pub rel_path: String,
     pub node_id: u32,
     pub level: u8,
-    pub path: Vec<String>,
+    pub heading_path: Vec<String>,
     pub byte_range: [u32; 2],
     pub content: String,
     pub outbound_links: Vec<LinkInfo>,
@@ -171,7 +178,7 @@ pub struct SearchHit {
     pub doc_id: u32,
     pub node_id: u32,
     pub level: u8,
-    pub path: Vec<String>,
+    pub heading_path: Vec<String>,
     pub summary: String,
     pub score: f32,
     /// In `group_by: "doc"` mode, additional matching sections from the
@@ -186,7 +193,7 @@ pub struct SearchHit {
 pub struct SectionHit {
     pub node_id: u32,
     pub level: u8,
-    pub path: Vec<String>,
+    pub heading_path: Vec<String>,
     pub summary: String,
     pub score: f32,
 }
@@ -244,7 +251,7 @@ pub struct Backlink {
     pub doc_id: u32,
     pub node_id: u32,
     pub level: u8,
-    pub path: Vec<String>,
+    pub heading_path: Vec<String>,
     pub summary: String,
 }
 
@@ -272,7 +279,7 @@ pub struct HotNode {
     pub doc_id: u32,
     pub node_id: u32,
     pub level: u8,
-    pub path: Vec<String>,
+    pub heading_path: Vec<String>,
     pub summary: String,
     pub access_count: u32,
 }
@@ -302,7 +309,7 @@ pub struct NeighborRef {
     pub node_id: u32,
     pub level: u8,
     pub title: String,
-    pub path: Vec<String>,
+    pub heading_path: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -421,25 +428,39 @@ pub struct GetByPathRequest {
 // helpers used by the server impl
 // -----------------------------------------------------------------------------
 
-/// Expand `HeadingPath` to `TocEntry` vec.
-pub(crate) fn flatten_toc(doc: &lore_index::DocumentIndex, max_depth: Option<u8>) -> Vec<TocEntry> {
-    let mut out = Vec::with_capacity(doc.nodes.len());
-    for node in &doc.nodes {
-        if let Some(limit) = max_depth
-            && node.level > limit
-        {
-            continue;
-        }
-        out.push(TocEntry {
-            node_id: node.id.0,
-            level: node.level,
-            title: node.title.clone(),
-            path: node.path.0.clone(),
-            has_children: !node.children.is_empty(),
-            kind: node.kind.clone(),
-        });
+/// Project a document's heading tree into nested `TocEntry` values, walking
+/// `roots` → `children` and pruning subtrees below `max_depth`.
+pub(crate) fn toc_tree(doc: &lore_index::DocumentIndex, max_depth: Option<u8>) -> Vec<TocEntry> {
+    doc.roots
+        .iter()
+        .filter_map(|&nid| toc_subtree(doc, nid, max_depth))
+        .collect()
+}
+
+fn toc_subtree(
+    doc: &lore_index::DocumentIndex,
+    node_id: NodeId,
+    max_depth: Option<u8>,
+) -> Option<TocEntry> {
+    let node = doc.node(node_id)?;
+    if let Some(limit) = max_depth
+        && node.level > limit
+    {
+        return None;
     }
-    out
+    Some(TocEntry {
+        node_id: node.id.0,
+        level: node.level,
+        title: node.title.clone(),
+        heading_path: node.path.0.clone(),
+        has_children: !node.children.is_empty(),
+        kind: node.kind.clone(),
+        children: node
+            .children
+            .iter()
+            .filter_map(|&cid| toc_subtree(doc, cid, max_depth))
+            .collect(),
+    })
 }
 
 pub(crate) fn to_heading_path(segments: &[String]) -> HeadingPath {

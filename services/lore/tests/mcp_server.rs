@@ -35,6 +35,16 @@ fn copy_fixture_to(dest: &Path) {
     copy_dir(Path::new(FIXTURE), dest);
 }
 
+/// Depth-first walk over a nested `roots[].children[]` TOC projection.
+fn walk_toc(entries: &[Value], f: &mut impl FnMut(&Value)) {
+    for e in entries {
+        f(e);
+        if let Some(children) = e["children"].as_array() {
+            walk_toc(children, f);
+        }
+    }
+}
+
 async fn free_port() -> std::net::SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -196,12 +206,37 @@ async fn mcp_server_end_to_end() {
     let docs = &toc_resp["result"]["structuredContent"]["documents"];
     assert!(!docs.as_array().unwrap().is_empty());
     for doc in docs.as_array().unwrap() {
-        for entry in doc["entries"].as_array().unwrap() {
+        walk_toc(doc["roots"].as_array().unwrap(), &mut |entry| {
             assert!(entry["level"].as_u64().unwrap() <= 2);
-        }
+        });
     }
     let total_docs = docs.as_array().unwrap().len();
     assert!(total_docs >= 3, "fixture has 3 documents");
+
+    // 4a) The TOC is a real tree: intro.md nests `Purpose` under
+    // `Introduction`, and at max_depth 2 the level-3 `Why` is pruned from
+    // `children` while `has_children` still flags it for drill-down.
+    let intro = docs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["rel_path"] == "docs/intro.md")
+        .expect("intro.md in TOC");
+    let intro_roots = intro["roots"].as_array().unwrap();
+    assert_eq!(intro_roots.len(), 1, "single H1 root");
+    assert_eq!(intro_roots[0]["title"], "Introduction");
+    let purpose = intro_roots[0]["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["title"] == "Purpose")
+        .expect("Purpose nested under Introduction");
+    assert_eq!(purpose["heading_path"], json!(["Introduction", "Purpose"]));
+    assert_eq!(purpose["has_children"], true, "Why exists below the cap");
+    assert!(
+        purpose.get("children").is_none(),
+        "children pruned at max_depth are omitted from the wire"
+    );
 
     // 4b) table_of_contents with path_prefix — only documents under
     // `docs/` should come back. README.md at the root must be excluded.
@@ -278,7 +313,7 @@ async fn mcp_server_end_to_end() {
     assert!(!hits.as_array().unwrap().is_empty());
     // BM25 should put the `# Architecture` heading first.
     assert_eq!(hits[0]["level"], 1);
-    assert_eq!(hits[0]["path"][0], "Architecture");
+    assert_eq!(hits[0]["heading_path"][0], "Architecture");
 
     // 6b) search with group_by: "doc" — the term "introduction" matches the
     // H1 of intro.md by title and several descendant sections via the
@@ -570,7 +605,7 @@ async fn mcp_server_end_to_end() {
     assert!(
         hot_nodes
             .iter()
-            .any(|n| n["path"][1] == "Purpose" && n["access_count"].as_u64().unwrap() >= 2)
+            .any(|n| n["heading_path"][1] == "Purpose" && n["access_count"].as_u64().unwrap() >= 2)
     );
 
     server.abort();

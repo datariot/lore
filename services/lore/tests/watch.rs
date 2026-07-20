@@ -19,6 +19,18 @@ async fn free_port() -> std::net::SocketAddr {
     addr
 }
 
+/// Collect every heading title in a nested `roots[].children[]` TOC.
+fn collect_titles(entries: &[Value], out: &mut Vec<String>) {
+    for e in entries {
+        if let Some(t) = e["title"].as_str() {
+            out.push(t.to_string());
+        }
+        if let Some(children) = e["children"].as_array() {
+            collect_titles(children, out);
+        }
+    }
+}
+
 async fn rpc(
     client: &reqwest::Client,
     url: &str,
@@ -134,7 +146,7 @@ async fn watch_triggers_incremental_reindex() {
     .await;
     let docs = &toc_before["result"]["structuredContent"]["documents"];
     assert_eq!(docs.as_array().unwrap().len(), 1);
-    assert_eq!(docs[0]["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(docs[0]["roots"].as_array().unwrap().len(), 1);
 
     // 5) Create a NEW file in the watched root.
     fs::write(root.join("second.md"), "# Second\n\n## Nested\n").unwrap();
@@ -190,18 +202,16 @@ async fn watch_triggers_incremental_reindex() {
             &session,
         )
         .await;
-        let entries = toc_now["result"]["structuredContent"]["documents"][0]["entries"]
+        let roots = toc_now["result"]["structuredContent"]["documents"][0]["roots"]
             .as_array()
             .cloned()
             .unwrap_or_default();
-        if entries.len() >= 3 {
+        let mut titles: Vec<String> = Vec::new();
+        collect_titles(&roots, &mut titles);
+        if titles.len() >= 3 {
             updated = true;
-            let titles: Vec<&str> = entries
-                .iter()
-                .map(|e| e["title"].as_str().unwrap_or(""))
-                .collect();
-            assert!(titles.contains(&"Added"));
-            assert!(titles.contains(&"Deeper"));
+            assert!(titles.iter().any(|t| t == "Added"));
+            assert!(titles.iter().any(|t| t == "Deeper"));
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

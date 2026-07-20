@@ -71,6 +71,8 @@ If you add a new derived index or a new MCP tool, write:
 
 Nine tools in `services/lore/src/mcp/server.rs`, all routed by `#[tool_router]`. Request/response types live in `mcp/tools.rs` so the server file stays readable. Tools take `Parameters<Req>` and return `Json<Resp>`.
 
+Naming rules for wire fields: the heading-segment list is always `heading_path` — in requests *and* responses; `rel_path` is always the file path. Never introduce a bare `path` field. `table_of_contents` returns the tree nested (`roots[].children[]`), not a flat list.
+
 When adding a tool:
 
 1. Define `FooRequest` / `FooResponse` in `mcp/tools.rs` with `#[derive(Serialize, Deserialize, JsonSchema)]`.
