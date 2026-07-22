@@ -99,6 +99,8 @@ When adding a tool:
 - **Wiki-links in code fences** must be excluded — see `build_code_mask` in `lore-parse/src/links.rs`.
 - **`access_count` is `#[serde(skip)]`** so the on-disk index is stable. Counters live only in memory.
 - **The watch integration test needs FSEvents delivery.** Sandboxed shells (e.g. Claude Code's default Bash sandbox) block it, and the test fails with "watcher may not be firing" even though the code is fine. Run it unsandboxed before concluding anything is broken.
+- **Integration tests can't see MCP protocol-version mismatches.** `tests/mcp_server.rs` speaks raw JSON-RPC and accepts whatever version the server offers, so a client that refuses our `initialize` reply still passes CI. rmcp 0.8.5 pinned `2025-03-26` and Claude Code silently failed tool discovery. After an rmcp change, verify against a real client: `claude mcp list` must say `✔ Connected`, not "Connected · tools fetch failed".
+- **`#[tool_handler]` must stay `(router = self.tool_router)`.** rmcp 2.x defaults to `Self::tool_router()`, rebuilding the whole router on every `call_tool`/`list_tools` — a query-time cost that violates invariant #3.
 
 ## Substack article
 
