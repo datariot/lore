@@ -579,28 +579,33 @@ impl LoreServer {
     }
 }
 
-#[tool_handler]
+// rmcp 2.x defaults to `Self::tool_router()`, which rebuilds the router on
+// every call_tool/list_tools. Point it at the instance field so the router
+// is built once in `new()` — invariant #3, no work at query time.
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for LoreServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::default(),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            server_info: Implementation {
-                name: "lore".to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                title: Some("Lore".to_string()),
-                website_url: Some("https://github.com/datariot/lore".to_string()),
-                icons: None,
-            },
-            instructions: Some(
-                "Lore exposes structured retrieval over indexed markdown corpora. \
-                 Start with `list_sources` to see what's loaded, call `table_of_contents` \
-                 to get a document's heading tree, then use `get_section` to pull exact \
-                 byte-range content without reparsing. `search` covers keyword lookups. \
-                 `add_source` registers a new directory."
-                    .to_string(),
-            ),
-        }
+        // rmcp 2.x marks these structs non-exhaustive; mutate defaults
+        // instead of literal construction.
+        let mut server_info = Implementation::default();
+        server_info.name = "lore".to_string();
+        server_info.version = env!("CARGO_PKG_VERSION").to_string();
+        server_info.title = Some("Lore".to_string());
+        server_info.website_url = Some("https://github.com/datariot/lore".to_string());
+
+        let mut info = ServerInfo::default();
+        info.protocol_version = ProtocolVersion::default();
+        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info.server_info = server_info;
+        info.instructions = Some(
+            "Lore exposes structured retrieval over indexed markdown corpora. \
+             Start with `list_sources` to see what's loaded, call `table_of_contents` \
+             to get a document's heading tree, then use `get_section` to pull exact \
+             byte-range content without reparsing. `search` covers keyword lookups. \
+             `add_source` registers a new directory."
+                .to_string(),
+        );
+        info
     }
 }
 
