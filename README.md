@@ -43,7 +43,13 @@ lore serve -r /path/to/your/vault
 lore watch -r /path/to/your/vault
 ```
 
-The MCP endpoint is at `http://127.0.0.1:7331/mcp` by default. Point any MCP-compatible client at it.
+The MCP endpoint is at `http://127.0.0.1:7331/mcp` by default. Point any MCP-compatible client at it — for Claude Code:
+
+```bash
+claude mcp add --scope user --transport http lore http://127.0.0.1:7331/mcp
+```
+
+To run it continuously against a live vault, see [docs/daily-driver.md](docs/daily-driver.md).
 
 > **Upgrading from a pre-stemming build?** The on-disk index format moved from `lore-index-v1` to `lore-index-v2` when Porter stemming landed. Old `.lore/index.json` files refuse to load with a clear message; re-run `lore index <root>` to rebuild.
 

@@ -45,7 +45,7 @@ pulldown-cmark = "0.12"
 gray_matter = "0.2"
 
 # mcp
-rmcp = { version = "0.8", features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
+rmcp = { version = "2", features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
 schemars = "1"
 
 # http
