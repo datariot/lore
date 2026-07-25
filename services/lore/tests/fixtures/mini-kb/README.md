@@ -1,5 +1,6 @@
 ---
 title: Mini KB
+description: Fixture corpus exercising zephyrine retrieval hooks.
 tags:
   - test-fixture
 ---

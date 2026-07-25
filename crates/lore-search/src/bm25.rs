@@ -29,6 +29,10 @@ pub struct Ranker {
     pub title_weight: f32,
     pub path_weight: f32,
     pub summary_weight: f32,
+    /// Weight for the author-written frontmatter `description`. Set at title
+    /// weight: a description is text the author wrote *specifically to be
+    /// retrieved on*, so it's as strong a signal as the heading itself.
+    pub description_weight: f32,
     pub k1: f32,
     pub b: f32,
     pub access_boost: f32,
@@ -40,6 +44,7 @@ impl Default for Ranker {
             title_weight: 3.0,
             path_weight: 2.0,
             summary_weight: 1.0,
+            description_weight: 3.0,
             k1: 1.2,
             b: 0.75,
             access_boost: 0.25,
@@ -278,6 +283,11 @@ fn score_all(corpus: &CorpusIndex, query: &str, ranker: &Ranker) -> Vec<SearchHi
                     corpus.field_lengths.avg_summary,
                     ranker.summary_weight,
                     corpus.field_lengths.get(p.doc, p.node, Field::Summary),
+                ),
+                Field::Description => (
+                    corpus.field_lengths.avg_description,
+                    ranker.description_weight,
+                    corpus.field_lengths.get(p.doc, p.node, Field::Description),
                 ),
             };
             let norm = 1.0 - ranker.b + ranker.b * (len as f32) / avgdl.max(1.0);
@@ -552,6 +562,38 @@ mod tests {
         let corpus = corpus_of(&[("a.md", "# Hi\n")]);
         assert!(search_grouped(&corpus, "", 10, 3).is_empty());
         assert!(search_grouped(&corpus, "-only", 10, 3).is_empty());
+    }
+
+    #[test]
+    fn frontmatter_description_is_searchable_and_beats_body() {
+        // `zephyr` appears ONLY in a.md's frontmatter description, never in
+        // any heading or body. It must still be found — the whole point of
+        // indexing the author's retrieval hook.
+        let corpus = corpus_of(&[
+            (
+                "a.md",
+                "---\ndescription: A guide to the zephyr subsystem\n---\n# Wind Module\n\nMoves air.\n",
+            ),
+            ("b.md", "# Unrelated\n\nnothing here.\n"),
+        ]);
+        let hits = search(&corpus, "zephyr", 10);
+        assert!(!hits.is_empty(), "description term must be searchable");
+        let top = &hits[0];
+        assert_eq!(corpus.doc(top.doc).unwrap().rel_path, "a.md");
+        // The match lands on the document's root node (its H1).
+        assert!(corpus.doc(top.doc).unwrap().roots.contains(&top.node));
+    }
+
+    #[test]
+    fn description_indexed_only_on_root_nodes() {
+        // A description term must not make every interior section match.
+        let corpus = corpus_of(&[(
+            "a.md",
+            "---\ndescription: covers zephyr thoroughly\n---\n# Root\n\n## Child A\n\nbody.\n\n## Child B\n\nbody.\n",
+        )]);
+        let hits = search(&corpus, "zephyr", 10);
+        assert_eq!(hits.len(), 1, "only the root node carries the description");
+        assert_eq!(hits[0].node, NodeId(0));
     }
 
     #[test]

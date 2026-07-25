@@ -107,6 +107,7 @@ impl LoreServer {
                 rel_path: doc.rel_path.clone(),
                 doc_id: i as u32,
                 title: doc.nodes.first().map(|n| n.title.clone()),
+                description: doc.description().map(str::to_string),
                 node_count: doc.nodes.len(),
                 frontmatter: if req.include_frontmatter {
                     doc.frontmatter.clone()
@@ -249,6 +250,7 @@ impl LoreServer {
                         level: node.level,
                         heading_path: node.path.0.clone(),
                         summary: node.summary.clone(),
+                        description: doc.description().map(str::to_string),
                         score: h.score,
                         secondary_hits: Vec::new(),
                     })
@@ -281,6 +283,7 @@ impl LoreServer {
                             level: primary_node.level,
                             heading_path: primary_node.path.0.clone(),
                             summary: primary_node.summary.clone(),
+                            description: doc.description().map(str::to_string),
                             score: g.primary.score,
                             secondary_hits,
                         })

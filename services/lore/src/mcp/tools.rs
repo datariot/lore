@@ -180,6 +180,10 @@ pub struct SearchHit {
     pub level: u8,
     pub heading_path: Vec<String>,
     pub summary: String,
+    /// The document's author-written frontmatter `description`, when present.
+    /// A curated retrieval hook — read this before the body-derived `summary`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub score: f32,
     /// In `group_by: "doc"` mode, additional matching sections from the
     /// same document, ranked by score. Empty in section mode.
@@ -422,6 +426,10 @@ pub struct DocumentSummary {
     /// Title of the first level-1 heading, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Author-written frontmatter `description`, when present — the curated
+    /// one-line hook for the document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub node_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frontmatter: Option<serde_json::Value>,

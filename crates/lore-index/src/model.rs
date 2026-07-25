@@ -66,4 +66,18 @@ impl DocumentIndex {
     pub fn node_mut(&mut self, id: NodeId) -> Option<&mut HeadingNode> {
         self.nodes.get_mut(id.index())
     }
+
+    /// The author-written `description` from frontmatter, if present and a
+    /// non-empty string. This is text an author wrote *to be retrieved on*
+    /// (the same convention SKILL.md and llms.txt use), distinct from a
+    /// node's body-derived `summary`. Only a top-level string value counts —
+    /// a list or map `description` is ignored.
+    pub fn description(&self) -> Option<&str> {
+        self.frontmatter
+            .as_ref()?
+            .get("description")?
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
 }

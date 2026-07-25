@@ -26,6 +26,9 @@ pub enum Field {
     Title,
     Path,
     Summary,
+    /// Author-written frontmatter `description`, indexed only on a
+    /// document's root node(s). Sparse: most nodes have none.
+    Description,
 }
 
 impl Field {
@@ -34,6 +37,7 @@ impl Field {
             Field::Title => 0,
             Field::Path => 1,
             Field::Summary => 2,
+            Field::Description => 3,
         }
     }
 }
@@ -55,10 +59,16 @@ pub struct FieldLengths {
     pub title: Vec<Vec<u16>>,
     pub path: Vec<Vec<u16>>,
     pub summary: Vec<Vec<u16>>,
+    pub description: Vec<Vec<u16>>,
     pub total_nodes: u32,
     pub avg_title: f32,
     pub avg_path: f32,
     pub avg_summary: f32,
+    /// Average description length over the nodes that *have* a description,
+    /// not over all nodes. Description is sparse (root nodes only), so
+    /// dividing by `total_nodes` would collapse the average toward zero and
+    /// make BM25 length-normalization wrongly punish every description hit.
+    pub avg_description: f32,
 }
 
 impl FieldLengths {
@@ -69,6 +79,7 @@ impl FieldLengths {
             Field::Title => &self.title,
             Field::Path => &self.path,
             Field::Summary => &self.summary,
+            Field::Description => &self.description,
         };
         arena.get(d).and_then(|v| v.get(n)).copied().unwrap_or(0)
     }
@@ -157,10 +168,15 @@ impl CorpusIndex {
         let mut title_lens: Vec<Vec<u16>> = Vec::with_capacity(self.documents.len());
         let mut path_lens: Vec<Vec<u16>> = Vec::with_capacity(self.documents.len());
         let mut summary_lens: Vec<Vec<u16>> = Vec::with_capacity(self.documents.len());
+        let mut desc_lens: Vec<Vec<u16>> = Vec::with_capacity(self.documents.len());
         let mut total_nodes: u32 = 0;
         let mut title_total: u64 = 0;
         let mut path_total: u64 = 0;
         let mut summary_total: u64 = 0;
+        // Description totals divide by the count of description-bearing nodes,
+        // not `total_nodes` — the field is sparse (root nodes only).
+        let mut desc_total: u64 = 0;
+        let mut desc_node_count: u32 = 0;
 
         for (di, doc) in self.documents.iter().enumerate() {
             let did = DocId(di as u32);
@@ -171,6 +187,27 @@ impl CorpusIndex {
             let mut doc_title = Vec::with_capacity(doc.nodes.len());
             let mut doc_path = Vec::with_capacity(doc.nodes.len());
             let mut doc_summary = Vec::with_capacity(doc.nodes.len());
+            let mut doc_desc = vec![0u16; doc.nodes.len()];
+
+            // The frontmatter description is a document-level string indexed
+            // on the document's root node(s) — a description-match surfaces
+            // the doc's top, not an arbitrary interior section.
+            let desc_tokens: Vec<String> = doc.description().map(tokenize).unwrap_or_default();
+            if !desc_tokens.is_empty() {
+                for &root in &doc.roots {
+                    add_postings(
+                        &mut self.inverted,
+                        did,
+                        root,
+                        Field::Description,
+                        &desc_tokens,
+                    );
+                    let len = desc_tokens.len().min(u16::MAX as usize) as u16;
+                    doc_desc[root.index()] = len;
+                    desc_total += desc_tokens.len() as u64;
+                    desc_node_count += 1;
+                }
+            }
 
             for node in &doc.nodes {
                 self.heading_lookup
@@ -224,6 +261,7 @@ impl CorpusIndex {
             title_lens.push(doc_title);
             path_lens.push(doc_path);
             summary_lens.push(doc_summary);
+            desc_lens.push(doc_desc);
         }
 
         for (did, nid, target) in fragment_links {
@@ -246,14 +284,17 @@ impl CorpusIndex {
         }
 
         let denom = total_nodes.max(1) as f32;
+        let desc_denom = desc_node_count.max(1) as f32;
         self.field_lengths = FieldLengths {
             title: title_lens,
             path: path_lens,
             summary: summary_lens,
+            description: desc_lens,
             total_nodes,
             avg_title: title_total as f32 / denom,
             avg_path: path_total as f32 / denom,
             avg_summary: summary_total as f32 / denom,
+            avg_description: desc_total as f32 / desc_denom,
         };
     }
 

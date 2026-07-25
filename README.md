@@ -77,7 +77,7 @@ lore/
 │   ├── lore-core      Types: SourceId, NodeId, HeadingPath, ByteRange, Link.
 │   ├── lore-parse     pulldown-cmark events + frontmatter + wiki-links + Dataview.
 │   ├── lore-index     Heading tree, corpus-level indices, serialization.
-│   ├── lore-search    BM25 ranker over title/path/summary with access boost.
+│   ├── lore-search    BM25 ranker over title/path/summary/description with access boost.
 │   └── lore-watch     Debounced notify-rs wrapper.
 └── services/
     └── lore           Single binary: clap CLI + rmcp server over Streamable HTTP.
@@ -103,7 +103,7 @@ Plan target was **<10 ms p99 for search at 15K headings** — the inverted index
 
 Lore handles Obsidian-flavoured markdown natively:
 
-- **Frontmatter** is parsed as YAML and surfaced in `table_of_contents` when requested.
+- **Frontmatter** is parsed as YAML and surfaced in `table_of_contents` when requested. A frontmatter `description` is treated as an author-written retrieval hook: it's indexed as a top-weight BM25 field on the document's root heading (so a doc is findable by words that appear only in its description) and returned on search hits and `list_documents`.
 - **Wiki-links** (`[[Page]]`, `[[Page|alias]]`, `[[folder/Page#Heading]]`) are extracted and indexed. Backlinks match by basename, so `[[arch]]` and `[[docs/arch.md#Caching]]` both find the same target. `#Heading` fragments are resolved to their heading at index time, so backlinks can be queried at section granularity.
 - **Dataview blocks** are tagged with `kind: "dataview"` on the owning heading so agents know they're query results, not prose.
 - **Code-fenced wiki-links** are excluded — `[[example]]` inside a code block doesn't create a spurious link.

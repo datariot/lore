@@ -365,6 +365,38 @@ async fn mcp_server_end_to_end() {
     let matched = psc["coverage"]["matched_terms"].as_array().unwrap();
     assert_eq!(matched.len(), 1, "the real term matched");
 
+    // 6a'') frontmatter description: `zephyrine` appears only in README.md's
+    // frontmatter `description`, nowhere in any heading or body. It must be
+    // searchable, land on the document root, and the hit must carry the
+    // curated description text.
+    let (desc_resp, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "search",
+            "arguments": {"source_id": source_id, "query": "zephyrine"}
+        }),
+        &session,
+    )
+    .await;
+    let dsc = &desc_resp["result"]["structuredContent"];
+    assert_eq!(
+        dsc["coverage"]["level"], "full",
+        "description term is in the corpus"
+    );
+    let dhits = dsc["hits"].as_array().unwrap();
+    assert!(!dhits.is_empty(), "description-only term must be findable");
+    assert_eq!(dhits[0]["rel_path"], "README.md");
+    assert_eq!(dhits[0]["level"], 1, "match lands on the document root");
+    assert!(
+        dhits[0]["description"]
+            .as_str()
+            .unwrap()
+            .contains("zephyrine"),
+        "hit carries the frontmatter description"
+    );
+
     // 6b) search with group_by: "doc" — the term "introduction" matches the
     // H1 of intro.md by title and several descendant sections via the
     // path-segments field. Section mode returns >1 hit; doc mode collapses
