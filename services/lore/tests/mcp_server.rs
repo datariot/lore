@@ -309,11 +309,61 @@ async fn mcp_server_end_to_end() {
         &session,
     )
     .await;
-    let hits = &search_resp["result"]["structuredContent"]["hits"];
+    let sc = &search_resp["result"]["structuredContent"];
+    let hits = &sc["hits"];
     assert!(!hits.as_array().unwrap().is_empty());
     // BM25 should put the `# Architecture` heading first.
     assert_eq!(hits[0]["level"], 1);
     assert_eq!(hits[0]["heading_path"][0], "Architecture");
+    // A term that exists in the corpus → coverage `full`.
+    assert_eq!(sc["coverage"]["level"], "full");
+    assert!(
+        sc["coverage"]["unmatched_terms"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // 6a) coverage: a nonsense query the corpus doesn't contain returns
+    // `none` with empty hits — the honest out-of-domain signal.
+    let (miss_resp, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "search",
+            "arguments": {"source_id": source_id, "query": "zzzznonexistent qqwweerr"}
+        }),
+        &session,
+    )
+    .await;
+    let msc = &miss_resp["result"]["structuredContent"];
+    assert!(msc["hits"].as_array().unwrap().is_empty());
+    assert_eq!(msc["coverage"]["level"], "none");
+    assert_eq!(
+        msc["coverage"]["unmatched_terms"].as_array().unwrap().len(),
+        2
+    );
+
+    // 6a') coverage: one real term + one absent term → `partial`, and the
+    // agent is told which term missed.
+    let (part_resp, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "search",
+            "arguments": {"source_id": source_id, "query": "architecture zzzznonexistent"}
+        }),
+        &session,
+    )
+    .await;
+    let psc = &part_resp["result"]["structuredContent"];
+    assert_eq!(psc["coverage"]["level"], "partial");
+    let unmatched = psc["coverage"]["unmatched_terms"].as_array().unwrap();
+    assert_eq!(unmatched.len(), 1, "exactly the absent term is unmatched");
+    let matched = psc["coverage"]["matched_terms"].as_array().unwrap();
+    assert_eq!(matched.len(), 1, "the real term matched");
 
     // 6b) search with group_by: "doc" — the term "introduction" matches the
     // H1 of intro.md by title and several descendant sections via the

@@ -63,7 +63,7 @@ To run it continuously against a live vault, see [docs/daily-driver.md](docs/dai
 | `table_of_contents` | Heading tree for a corpus or a single document, as nested `roots[].children[]` — the wire format is the tree. Supports `max_depth` and optional frontmatter. |
 | `get_section` | Retrieve a section by heading path or node id. O(1) byte-range slice via mmap. |
 | `get_by_path` | Convenience form: `file.md#Heading > Subheading`. |
-| `search` | BM25 ranking over titles, path segments, and summaries. Porter-stemmed (so `alarm` finds `alarms`). `-term` excludes. `group_by: "doc"` collapses same-document hits. Access-count boost. |
+| `search` | BM25 ranking over titles, path segments, and summaries. Porter-stemmed (so `alarm` finds `alarms`). `-term` excludes. `group_by: "doc"` collapses same-document hits. Access-count boost. Returns a `coverage` verdict (`full`/`partial`/`none`) so an agent can tell "not in this corpus" from "no good match" and stop instead of retrying. |
 | `backlinks` | Every section that links *to* a target — precomputed at index time. `target_anchor` narrows to links aimed at one section (`[[Page#Heading]]`). |
 | `recent_hot` | Top-N sections by access count. Agent usage as the importance signal. |
 | `neighbors` | Parent, prev/next sibling, children of a node. Navigate one hop at a time. |

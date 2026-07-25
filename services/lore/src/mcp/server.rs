@@ -227,7 +227,7 @@ impl LoreServer {
     // ---- search -------------------------------------------------------------
 
     #[tool(
-        description = "BM25 keyword search over heading titles, path segments, and the per-section first-sentence summary. Returns ranked hits with a summary line each. Tokens are lowercased; English stopwords and tokens shorter than two characters are skipped. Prefix a token with `-` to exclude any node containing it (e.g., `kafka -lambda`). No phrase or proximity operators. Set `group_by` to `\"doc\"` to collapse same-document hits into one primary plus up to `secondary_limit` (default 3) nested same-document sections — useful for narrow queries that concentrate in a single file."
+        description = "BM25 keyword search over heading titles, path segments, and the per-section first-sentence summary. Returns ranked hits with a summary line each, plus a `coverage` verdict: `full` = every query term exists in this corpus, `partial` = some do (see `unmatched_terms`), `none` = the corpus does not contain your vocabulary — treat empty/weak results as authoritative and STOP rather than rephrasing and retrying. Tokens are lowercased; English stopwords and tokens shorter than two characters are skipped. Prefix a token with `-` to exclude any node containing it (e.g., `kafka -lambda`). No phrase or proximity operators. Set `group_by` to `\"doc\"` to collapse same-document hits into one primary plus up to `secondary_limit` (default 3) nested same-document sections — useful for narrow queries that concentrate in a single file."
     )]
     async fn search(
         &self,
@@ -289,9 +289,12 @@ impl LoreServer {
             }
         };
 
+        let coverage = lore_search::coverage(&corpus, &req.query).into();
+
         Ok(Json(SearchResponse {
             source_id: corpus.source.to_string(),
             query: req.query,
+            coverage,
             hits,
         }))
     }

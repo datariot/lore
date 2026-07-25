@@ -198,10 +198,50 @@ pub struct SectionHit {
     pub score: f32,
 }
 
+/// Term-presence verdict for a query against a corpus. `full` = every
+/// content term exists somewhere; `partial` = some do; `none` = the corpus
+/// doesn't contain the query vocabulary at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverageLevel {
+    Full,
+    Partial,
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SearchCoverage {
+    pub level: CoverageLevel,
+    /// Normalized (stemmed) query terms with postings in this corpus.
+    pub matched_terms: Vec<String>,
+    /// Normalized query terms with no postings — likely typos or vocabulary
+    /// this corpus simply doesn't use.
+    pub unmatched_terms: Vec<String>,
+}
+
+impl From<lore_search::CoverageReport> for SearchCoverage {
+    fn from(r: lore_search::CoverageReport) -> Self {
+        let level = match r.level {
+            lore_search::Coverage::Full => CoverageLevel::Full,
+            lore_search::Coverage::Partial => CoverageLevel::Partial,
+            lore_search::Coverage::None => CoverageLevel::None,
+        };
+        SearchCoverage {
+            level,
+            matched_terms: r.matched_terms,
+            unmatched_terms: r.unmatched_terms,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SearchResponse {
     pub source_id: String,
     pub query: String,
+    /// Whether the corpus contains the query's vocabulary at all. Read this
+    /// before trusting an empty or weak `hits` list: `none` means stop, not
+    /// rephrase.
+    pub coverage: SearchCoverage,
     pub hits: Vec<SearchHit>,
 }
 

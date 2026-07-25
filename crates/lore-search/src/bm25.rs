@@ -147,6 +147,71 @@ pub fn parse_query(query: &str) -> (Vec<String>, Vec<String>) {
     (pos, neg)
 }
 
+/// How much of a query's vocabulary the corpus actually contains.
+///
+/// This is a *term-presence* verdict, not a score verdict: it answers "do
+/// the words you searched for exist anywhere in this corpus?" — the honest
+/// out-of-domain signal from ByteRover's playbook. It deliberately does not
+/// judge relevance strength; that's what the per-hit BM25 `score` is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Coverage {
+    /// Every content term in the query has postings in the corpus.
+    Full,
+    /// Some — but not all — content terms have postings. Results may be
+    /// partial or tangential; check `unmatched_terms`.
+    Partial,
+    /// No content term has any posting. The corpus almost certainly does
+    /// not contain the answer — don't rephrase-and-retry more than once.
+    None,
+}
+
+/// Coverage verdict plus the normalized terms that did and didn't land.
+/// Terms are Porter stems (the index's own keys), so a query typo shows up
+/// as its stemmed form in `unmatched_terms`.
+#[derive(Debug, Clone, Serialize)]
+pub struct CoverageReport {
+    pub level: Coverage,
+    pub matched_terms: Vec<String>,
+    pub unmatched_terms: Vec<String>,
+}
+
+/// Classify how much of `query`'s vocabulary the corpus contains, by
+/// checking each positive (non-negated) content term against the inverted
+/// index. Negation terms and stopwords/short tokens are ignored — they
+/// carry no "is this in the corpus" signal. Pure lookups, no scoring pass.
+pub fn coverage(corpus: &CorpusIndex, query: &str) -> CoverageReport {
+    let mut matched = Vec::new();
+    let mut unmatched = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for word in query.split_whitespace() {
+        if word.starts_with('-') {
+            continue;
+        }
+        for stem in tokenize(word) {
+            if !seen.insert(stem.clone()) {
+                continue;
+            }
+            if corpus.inverted.contains_key(&stem) {
+                matched.push(stem);
+            } else {
+                unmatched.push(stem);
+            }
+        }
+    }
+    let level = match (matched.is_empty(), unmatched.is_empty()) {
+        (true, true) => Coverage::None, // no content terms at all (all stopwords)
+        (true, false) => Coverage::None,
+        (false, true) => Coverage::Full,
+        (false, false) => Coverage::Partial,
+    };
+    CoverageReport {
+        level,
+        matched_terms: matched,
+        unmatched_terms: unmatched,
+    }
+}
+
 pub fn search_bm25(
     corpus: &CorpusIndex,
     query: &str,
@@ -487,6 +552,63 @@ mod tests {
         let corpus = corpus_of(&[("a.md", "# Hi\n")]);
         assert!(search_grouped(&corpus, "", 10, 3).is_empty());
         assert!(search_grouped(&corpus, "-only", 10, 3).is_empty());
+    }
+
+    #[test]
+    fn coverage_full_when_every_term_present() {
+        let corpus = corpus_of(&[("a.md", "# Kafka Connect\n\nstreaming pipeline.\n")]);
+        let cov = coverage(&corpus, "kafka connect");
+        assert_eq!(cov.level, Coverage::Full);
+        assert!(cov.unmatched_terms.is_empty());
+        assert_eq!(cov.matched_terms.len(), 2);
+    }
+
+    #[test]
+    fn coverage_partial_when_some_terms_miss() {
+        let corpus = corpus_of(&[("a.md", "# Kafka Connect\n\nstreaming.\n")]);
+        let cov = coverage(&corpus, "kafka zzzznonexistent");
+        assert_eq!(cov.level, Coverage::Partial);
+        assert_eq!(cov.matched_terms, vec!["kafka".to_string()]);
+        // The unmatched term is reported as its stem — whatever the stemmer
+        // produced for the nonsense word, matched against nothing.
+        assert_eq!(cov.unmatched_terms, tokenize("zzzznonexistent"));
+    }
+
+    #[test]
+    fn coverage_none_when_no_term_present() {
+        let corpus = corpus_of(&[("a.md", "# Kafka Connect\n\nstreaming.\n")]);
+        let cov = coverage(&corpus, "zzzznonexistent qqwwee");
+        assert_eq!(cov.level, Coverage::None);
+        assert!(cov.matched_terms.is_empty());
+        assert_eq!(cov.unmatched_terms.len(), 2);
+    }
+
+    #[test]
+    fn coverage_none_for_stopword_only_query() {
+        let corpus = corpus_of(&[("a.md", "# Kafka\n\nbody.\n")]);
+        let cov = coverage(&corpus, "the and of");
+        assert_eq!(cov.level, Coverage::None);
+        assert!(cov.matched_terms.is_empty());
+        assert!(cov.unmatched_terms.is_empty());
+    }
+
+    #[test]
+    fn coverage_ignores_negation_terms() {
+        // A negated term that isn't in the corpus must not drag coverage
+        // down — coverage is about the positive query vocabulary.
+        let corpus = corpus_of(&[("a.md", "# Kafka Connect\n\nbody.\n")]);
+        let cov = coverage(&corpus, "kafka -zzzznonexistent");
+        assert_eq!(cov.level, Coverage::Full);
+        assert!(cov.unmatched_terms.is_empty());
+    }
+
+    #[test]
+    fn coverage_stems_query_terms_before_lookup() {
+        // Index has "alarms"; query "alarming" must count as matched via
+        // the shared Porter stem, same as search does.
+        let corpus = corpus_of(&[("a.md", "# Critical Alarms\n\nbody.\n")]);
+        let cov = coverage(&corpus, "alarming");
+        assert_eq!(cov.level, Coverage::Full);
     }
 
     #[test]

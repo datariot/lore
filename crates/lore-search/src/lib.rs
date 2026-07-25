@@ -15,8 +15,8 @@
 mod bm25;
 
 pub use bm25::{
-    GroupedSearchHit, Ranker, SearchHit, parse_query, search, search_bm25, search_grouped,
-    search_grouped_bm25,
+    Coverage, CoverageReport, GroupedSearchHit, Ranker, SearchHit, coverage, parse_query, search,
+    search_bm25, search_grouped, search_grouped_bm25,
 };
 
 // Phase 3 called this `search_naive`; keep the alias so service code
