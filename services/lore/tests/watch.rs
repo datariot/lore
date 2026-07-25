@@ -19,6 +19,36 @@ async fn free_port() -> std::net::SocketAddr {
     addr
 }
 
+/// Poll `table_of_contents` until the corpus reports exactly `target`
+/// documents, or the timeout elapses. Returns whether the count arrived.
+async fn wait_for_doc_count(
+    client: &reqwest::Client,
+    url: &str,
+    source_id: &str,
+    session: &Option<String>,
+    target: usize,
+    timeout: Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        let (toc, _s) = rpc(
+            client,
+            url,
+            "tools/call",
+            json!({"name": "table_of_contents", "arguments": {"source_id": source_id}}),
+            session,
+        )
+        .await;
+        if let Some(list) = toc["result"]["structuredContent"]["documents"].as_array()
+            && list.len() == target
+        {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
 /// Collect every heading title in a nested `roots[].children[]` TOC.
 fn collect_titles(entries: &[Value], out: &mut Vec<String>) {
     for e in entries {
@@ -134,6 +164,54 @@ async fn watch_triggers_incremental_reindex() {
         .unwrap();
 
     let source_id = root.file_name().unwrap().to_str().unwrap().to_string();
+
+    // 3b) Prime the FSEvents stream before the fixed-deadline assertions
+    // below (KB-640). On macOS an event that fires during the watcher's
+    // kqueue registration window can be *dropped outright*, not merely
+    // delayed — so polling for a single write can hang forever if that
+    // first write was the dropped one. We instead re-touch a throwaway
+    // sentinel until the watcher reports it; each rewrite is a fresh event
+    // that lands once the stream is warm. Content varies per iteration so a
+    // hash-dedup reindex can't skip it. Write + delete leave the baseline
+    // untouched, so every real assertion afterward measures a warm stream.
+    let warmup = root.join("warmup.md");
+    let mut warmed = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut attempt = 0u32;
+    while std::time::Instant::now() < deadline {
+        attempt += 1;
+        fs::write(&warmup, format!("# Warmup {attempt}\n")).unwrap();
+        if wait_for_doc_count(
+            &client,
+            &url,
+            &source_id,
+            &session,
+            2,
+            Duration::from_secs(1),
+        )
+        .await
+        {
+            warmed = true;
+            break;
+        }
+    }
+    assert!(
+        warmed,
+        "watcher never delivered a warmup file in 30s — FSEvents may be unavailable (sandboxed runner?)"
+    );
+    fs::remove_file(&warmup).unwrap();
+    assert!(
+        wait_for_doc_count(
+            &client,
+            &url,
+            &source_id,
+            &session,
+            1,
+            Duration::from_secs(10)
+        )
+        .await,
+        "watcher did not observe the warmup deletion"
+    );
 
     // 4) Confirm baseline TOC has one doc, one root heading.
     let (toc_before, session) = rpc(
