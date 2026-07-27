@@ -892,10 +892,16 @@ async fn mcp_server_end_to_end() {
         .as_array()
         .unwrap()
         .clone();
+    let purpose = hot_nodes
+        .iter()
+        .find(|n| n["heading_path"][1] == "Purpose")
+        .expect("Purpose section should be in recent_hot");
+    // Persisted, decayed counts (KB-644): raw count reflects the accesses,
+    // and the decayed score it was ranked by is positive.
+    assert!(purpose["access_count"].as_u64().unwrap() >= 2);
     assert!(
-        hot_nodes
-            .iter()
-            .any(|n| n["heading_path"][1] == "Purpose" && n["access_count"].as_u64().unwrap() >= 2)
+        purpose["decayed_score"].as_f64().unwrap() > 0.0,
+        "ranked by a positive decayed score"
     );
 
     server.abort();

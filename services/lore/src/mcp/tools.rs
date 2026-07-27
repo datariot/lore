@@ -524,7 +524,10 @@ pub struct HotNode {
     pub level: u8,
     pub heading_path: Vec<String>,
     pub summary: String,
+    /// Total accesses ever (monotonic, never decayed).
     pub access_count: u32,
+    /// The time-decayed score this node was ranked by (two-week half-life).
+    pub decayed_score: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub age_days: Option<u32>,
 }

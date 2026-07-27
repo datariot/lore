@@ -213,6 +213,23 @@ async fn run_serve(
         });
     }
 
+    // Periodically persist decayed access counts (KB-644). Dirty-gated, so an
+    // idle server writes nothing. A hard kill loses at most one interval of
+    // bumps — acceptable for a hotness signal that's regenerable anyway.
+    {
+        let reg = registry.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(30));
+            tick.tick().await; // first tick fires immediately; skip it
+            loop {
+                tick.tick().await;
+                if let Err(e) = reg.flush_access() {
+                    tracing::warn!(err = %e, "access-store flush failed");
+                }
+            }
+        });
+    }
+
     serve_http(registry, ServeOptions { bind, path })
         .await
         .map_err(|e| lore_core::Error::Io(e.to_string()))
