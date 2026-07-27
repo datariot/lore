@@ -15,18 +15,27 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use dashmap::DashMap;
 use lore_core::{Error, Result, SourceId};
-use lore_index::{CorpusIndex, build_document, load_index};
+use lore_index::{AccessRecord, AccessStore, CorpusIndex, build_document, load_index};
 use memmap2::Mmap;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use tracing::{debug, info};
 
-use crate::config::index_path;
+use crate::config::{access_path, index_path};
 
 /// Shared handle to a loaded corpus.
 pub type CorpusHandle = Arc<RwLock<CorpusIndex>>;
+
+/// A corpus's persisted access store plus the root it flushes to and a dirty
+/// flag so idle corpora aren't rewritten.
+struct AccessEntry {
+    store: Mutex<AccessStore>,
+    root: PathBuf,
+    dirty: AtomicBool,
+}
 
 /// Thread-safe store of corpora keyed by `SourceId`.
 #[derive(Clone, Default)]
@@ -37,6 +46,8 @@ pub struct CorpusRegistry {
     /// Absolute corpus roots in the order they were registered — used by
     /// the watcher to map a changed path back to a source.
     roots: Arc<RwLock<Vec<(SourceId, PathBuf)>>>,
+    /// Per-corpus decayed access store, persisted to `.lore/access.json`.
+    access: Arc<DashMap<SourceId, Arc<AccessEntry>>>,
 }
 
 impl CorpusRegistry {
@@ -51,6 +62,16 @@ impl CorpusRegistry {
         let root_dir = corpus.root_dir.clone();
         let handle = Arc::new(RwLock::new(corpus));
         self.install(source_id.clone(), root_dir.clone(), handle.clone());
+        // Load the persisted access store once per source. On a reload, keep
+        // the existing in-memory store — it holds the freshest bumps, some of
+        // which may not be flushed to the sidecar yet.
+        self.access.entry(source_id.clone()).or_insert_with(|| {
+            Arc::new(AccessEntry {
+                store: Mutex::new(load_access(&root_dir)),
+                root: root_dir.clone(),
+                dirty: AtomicBool::new(false),
+            })
+        });
         let guard = handle.read();
         info!(
             source = %source_id,
@@ -103,6 +124,65 @@ impl CorpusRegistry {
     /// Return every registered corpus root — `(source_id, root_dir)` pairs.
     pub fn roots(&self) -> Vec<(SourceId, PathBuf)> {
         self.roots.read().clone()
+    }
+
+    /// Record an access to a section in the persisted, decayed store. Called
+    /// from `get_section`; keyed by `(rel_path, heading_path)` so counts
+    /// survive a reindex. Marks the store dirty for the next flush.
+    pub fn bump_access(
+        &self,
+        source: &SourceId,
+        rel_path: &str,
+        heading_path: &[String],
+        now: u64,
+    ) {
+        if let Some(entry) = self.access.get(source) {
+            entry.store.lock().bump(rel_path, heading_path, now);
+            entry.dirty.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Every access record for a corpus paired with its decayed score at
+    /// `now`, ranked descending. Owned clones so callers don't hold the
+    /// access lock while resolving records back to nodes. Empty if the
+    /// source is unknown.
+    pub fn access_ranked(&self, source: &SourceId, now: u64) -> Vec<(AccessRecord, f64)> {
+        match self.access.get(source) {
+            Some(entry) => entry
+                .store
+                .lock()
+                .ranked(now)
+                .into_iter()
+                .map(|(r, s)| (r.clone(), s))
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Write every dirty access store to its `.lore/access.json` sidecar and
+    /// clear its dirty flag. Cheap and idempotent — safe to call on a timer
+    /// and again at shutdown.
+    pub fn flush_access(&self) -> Result<()> {
+        for entry in self.access.iter() {
+            let ae = entry.value();
+            if !ae.dirty.swap(false, Ordering::Relaxed) {
+                continue;
+            }
+            let store = ae.store.lock();
+            if store.is_empty() {
+                continue;
+            }
+            let path = access_path(&ae.root);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let text = serde_json::to_string(&*store)
+                .map_err(|e| Error::Io(format!("access json: {e}")))?;
+            std::fs::write(&path, text)
+                .map_err(|e| Error::Io(format!("write {}: {e}", path.display())))?;
+            debug!(root = %ae.root.display(), entries = store.len(), "flushed access store");
+        }
+        Ok(())
     }
 
     /// Given a path to a file on disk, find the source it belongs to and
@@ -212,6 +292,16 @@ impl CorpusRegistry {
     }
 }
 
+/// Load a corpus's access store from its `.lore/access.json` sidecar, or an
+/// empty store if the file is absent or unreadable (a corrupt sidecar must
+/// never block serving — usage data is regenerable).
+fn load_access(root: &Path) -> AccessStore {
+    match std::fs::read_to_string(access_path(root)) {
+        Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+        Err(_) => AccessStore::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,6 +333,38 @@ mod tests {
         reg.load_from_path(&idx_path).unwrap();
         assert_eq!(reg.len(), 1);
         assert!(reg.get(&SourceId::new("kb")).is_some());
+    }
+
+    #[test]
+    fn access_counts_persist_across_reload() {
+        // The KB-644 acceptance criterion: bump, flush, "restart" (fresh
+        // registry), and the decayed counts come back.
+        let dir = tempdir().unwrap();
+        let corpus = seed(dir.path(), "a.md", "# A\n\n## B\n");
+        let idx_path = dir.path().join(".lore/index.json");
+        lore_index::write_index(&idx_path, &corpus).unwrap();
+
+        let src = SourceId::new("kb");
+        let heading = vec!["A".to_string(), "B".to_string()];
+
+        let reg = CorpusRegistry::new();
+        reg.load_from_path(&idx_path).unwrap();
+        reg.bump_access(&src, "a.md", &heading, 1000);
+        reg.bump_access(&src, "a.md", &heading, 1000);
+        reg.flush_access().unwrap();
+        assert!(dir.path().join(".lore/access.json").exists());
+
+        // Fresh registry = a restart. The sidecar reloads.
+        let reg2 = CorpusRegistry::new();
+        reg2.load_from_path(&idx_path).unwrap();
+        let ranked = reg2.access_ranked(&src, 1000);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].0.count, 2, "raw count survived the reload");
+        assert_eq!(ranked[0].0.heading_path, heading);
+        assert!(
+            (ranked[0].1 - 2.0).abs() < 1e-9,
+            "decayed score at same instant"
+        );
     }
 
     #[test]

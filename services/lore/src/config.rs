@@ -8,12 +8,22 @@ pub const LORE_DIR: &str = ".lore";
 /// Filename for the serialized corpus index.
 pub const INDEX_FILE: &str = "index.json";
 
+/// Filename for the persisted access store (decayed hotness counts). A
+/// sidecar to the index — deliberately separate so the index format stays
+/// stable as usage data accumulates.
+pub const ACCESS_FILE: &str = "access.json";
+
 /// Default markdown extensions to include.
 pub const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdx", "mkd"];
 
 /// Return the canonical on-disk path for a corpus index given its root.
 pub fn index_path(root: &Path) -> PathBuf {
     root.join(LORE_DIR).join(INDEX_FILE)
+}
+
+/// Return the canonical on-disk path for a corpus's access store.
+pub fn access_path(root: &Path) -> PathBuf {
+    root.join(LORE_DIR).join(ACCESS_FILE)
 }
 
 /// Derive a default `SourceId` string from the corpus root path.

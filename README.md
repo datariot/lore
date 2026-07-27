@@ -71,7 +71,7 @@ To run it continuously against a live vault, see [docs/daily-driver.md](docs/dai
 | `get_by_path` | Convenience form: `file.md#Heading > Subheading`. |
 | `search` | BM25 ranking over titles, path segments, and summaries. Porter-stemmed (so `alarm` finds `alarms`). `-term` excludes. `group_by: "doc"` collapses same-document hits. Access-count boost. Returns a `coverage` verdict (`full`/`partial`/`none`) so an agent can tell "not in this corpus" from "no good match" and stop instead of retrying. Each hit reports `age_days`; pass `stale_after_days` for a per-hit `stale` boolean. |
 | `backlinks` | Every section that links *to* a target — precomputed at index time. `target_anchor` narrows to links aimed at one section (`[[Page#Heading]]`). |
-| `recent_hot` | Top-N sections by access count. Agent usage as the importance signal. |
+| `recent_hot` | Top-N sections by a time-decayed access score (two-week half-life) — recent use outranks stale heavy use. Persisted to `.lore/access.json`, so it survives restarts and reindexes. Returns raw `access_count` and `decayed_score`. |
 | `neighbors` | Parent, prev/next sibling, children of a node. Navigate one hop at a time. |
 | `add_source` | Register a new directory as a corpus. |
 

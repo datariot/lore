@@ -225,7 +225,16 @@ impl LoreServer {
         let slice = &map[range.start as usize..(range.end as usize).min(map.len())];
         let content = std::str::from_utf8(slice).map_err(|e| mcp_internal(format!("utf8: {e}")))?;
 
+        // Session-local tally for the BM25 boost...
         resolved.node.access_count.bump();
+        // ...and the persisted, decayed store that survives restarts and
+        // reindexes, keyed by (rel_path, heading_path).
+        self.registry.bump_access(
+            &source,
+            &req.rel_path,
+            &resolved.node.path.0,
+            crate::config::now_unix_secs(),
+        );
 
         Ok(Json(SectionResponse {
             source_id: corpus.source.to_string(),
@@ -457,44 +466,44 @@ impl LoreServer {
     // ---- recent_hot ---------------------------------------------------------
 
     #[tool(
-        description = "Top-N sections in a corpus by access count. Usage reveals which parts of the documentation an agent actually relies on — a ByteRover-style signal with zero curation."
+        description = "Top-N sections a corpus actually relies on, ranked by a time-decayed access score (two-week half-life) — recent use outweighs stale heavy use, so a section hammered months ago doesn't squat the top. Counts are persisted, so this survives restarts and reindexes. Each node reports the raw `access_count`, the `decayed_score` it was ranked by, and `age_days`. A ByteRover-style usage signal with zero curation."
     )]
     async fn recent_hot(
         &self,
         Parameters(req): Parameters<HotRequest>,
     ) -> Result<Json<HotResponse>, McpError> {
+        let source = SourceId::new(&req.source_id);
         let handle = self.corpus_handle(&req.source_id)?;
         let corpus = handle.read();
-        let mut all: Vec<(DocId, &lore_index::HeadingNode, u32)> =
-            Vec::with_capacity(corpus.total_nodes());
-        for (di, doc) in corpus.documents.iter().enumerate() {
-            let did = DocId(di as u32);
-            for node in &doc.nodes {
-                let count = node.access_count.get();
-                if count > 0 {
-                    all.push((did, node, count));
-                }
-            }
-        }
-        all.sort_by_key(|t| std::cmp::Reverse(t.2));
-        all.truncate(req.limit);
         let now = crate::config::now_unix_secs();
-        let nodes = all
-            .into_iter()
-            .filter_map(|(did, node, count)| {
-                let doc = corpus.doc(did)?;
-                Some(HotNode {
-                    rel_path: doc.rel_path.clone(),
-                    doc_id: did.0,
-                    node_id: node.id.0,
-                    level: node.level,
-                    heading_path: node.path.0.clone(),
-                    summary: node.summary.clone(),
-                    access_count: count,
-                    age_days: doc.age_days(now),
-                })
-            })
-            .collect();
+
+        // The persisted store ranks by decayed score; resolve each record back
+        // to its live node via (rel_path, heading_path). Records whose section
+        // no longer exists (heading removed on reindex) are skipped.
+        let mut nodes = Vec::with_capacity(req.limit.min(64));
+        for (rec, decayed_score) in self.registry.access_ranked(&source, now) {
+            if nodes.len() >= req.limit {
+                break;
+            }
+            let Some(&did) = corpus.path_to_doc.get(&rec.rel_path) else {
+                continue;
+            };
+            let Some(doc) = corpus.doc(did) else { continue };
+            let Some(node) = doc.nodes.iter().find(|n| n.path.0 == rec.heading_path) else {
+                continue;
+            };
+            nodes.push(HotNode {
+                rel_path: doc.rel_path.clone(),
+                doc_id: did.0,
+                node_id: node.id.0,
+                level: node.level,
+                heading_path: node.path.0.clone(),
+                summary: node.summary.clone(),
+                access_count: rec.count,
+                decayed_score,
+                age_days: doc.age_days(now),
+            });
+        }
         Ok(Json(HotResponse {
             source_id: corpus.source.to_string(),
             nodes,
