@@ -61,6 +61,7 @@ To run it continuously against a live vault, see [docs/daily-driver.md](docs/dai
 |---|---|
 | `list_sources` | Every corpus Lore has loaded, with document and heading counts. |
 | `table_of_contents` | Heading tree for a corpus or a single document, as nested `roots[].children[]` — the wire format is the tree. Supports `max_depth` and optional frontmatter. |
+| `corpus_map` | Navigation map of a whole corpus: the folder hierarchy (from document paths) nested folders → documents, each with its title, description, and a heading preview. The orient-yourself call for a large source. `path_prefix` maps one subtree. |
 | `get_section` | Retrieve a section by heading path or node id. O(1) byte-range slice via mmap. |
 | `get_by_path` | Convenience form: `file.md#Heading > Subheading`. |
 | `search` | BM25 ranking over titles, path segments, and summaries. Porter-stemmed (so `alarm` finds `alarms`). `-term` excludes. `group_by: "doc"` collapses same-document hits. Access-count boost. Returns a `coverage` verdict (`full`/`partial`/`none`) so an agent can tell "not in this corpus" from "no good match" and stop instead of retrying. |
