@@ -8,11 +8,13 @@
 pub mod cli;
 pub mod config;
 pub mod eval;
+pub mod export;
 pub mod mcp;
 pub mod walker;
 pub mod watch;
 
 pub use cli::{IndexOptions, IndexReport, index_command};
 pub use eval::{EvalSummary, eval_command, run_eval};
+pub use export::{export_command, render_llms_txt};
 pub use mcp::{CorpusRegistry, LoreServer, ServeOptions, serve_http};
 pub use watch::run_watcher;

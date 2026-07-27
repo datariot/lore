@@ -37,6 +37,7 @@ cargo run -p lore -- index /path/to/vault
 cargo run -p lore -- serve -r /path/to/vault
 cargo run -p lore -- watch -r /path/to/vault --debounce-ms 250
 cargo run -p lore -- eval -r /path/to/vault -q eval/mini-kb.jsonl   # retrieval effectiveness
+cargo run -p lore -- export -r /path/to/vault --out ./site --full   # llms.txt / llms-full.txt
 ```
 
 ## Design invariants

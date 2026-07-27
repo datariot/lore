@@ -4,7 +4,7 @@
 
 Lore is an MCP server that indexes a markdown corpus by its heading hierarchy and serves structured retrieval tools to agents over Streamable HTTP. No vector database. No LLM at retrieval time. No web dependency. Just markdown's own heading tree, used as the index it already is.
 
-Think of it as a reference librarian who knows the table of contents for every document you point them at.
+Think of it as a reference librarian who knows the table of contents for every document you point them at. Agents that don't speak MCP aren't left out — `lore export` emits a standard [`llms.txt`](https://llmstxt.org/) map of any corpus.
 
 ## Why
 
@@ -44,6 +44,9 @@ lore watch -r /path/to/your/vault
 
 # 4. Measure retrieval quality against a labeled query set.
 lore eval -r /path/to/your/vault -q eval/mini-kb.jsonl
+
+# 5. Export an llms.txt map (add --full for llms-full.txt).
+lore export -r /path/to/your/vault --out ./site
 ```
 
 The MCP endpoint is at `http://127.0.0.1:7331/mcp` by default. Point any MCP-compatible client at it — for Claude Code:

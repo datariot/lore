@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use lore_service::{
-    CorpusRegistry, IndexOptions, ServeOptions, eval_command, index_command, run_watcher,
-    serve_http,
+    CorpusRegistry, IndexOptions, ServeOptions, eval_command, export_command, index_command,
+    run_watcher, serve_http,
 };
 
 #[derive(Parser)]
@@ -47,6 +47,20 @@ enum Command {
         /// Path prefix under which MCP is mounted.
         #[arg(long, default_value = "/mcp")]
         path: String,
+    },
+    /// Export an `llms.txt` map of a corpus (and `llms-full.txt` with
+    /// `--full`) — a link-first index usable by agents that don't speak MCP.
+    Export {
+        /// Corpus root. Indexed on the fly if `.lore/index.json` is absent.
+        #[arg(short = 'r', long = "root", value_name = "DIR")]
+        root: PathBuf,
+        /// Directory to write `llms.txt` (+ `llms-full.txt`) into. Omit to
+        /// print `llms.txt` to stdout.
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        /// Also write `llms-full.txt` with every document's full text inline.
+        #[arg(long)]
+        full: bool,
     },
     /// Measure retrieval effectiveness: run a labeled query set through the
     /// ranker and report Success@k, MRR, and coverage-verdict accuracy.
@@ -100,6 +114,7 @@ async fn main() -> ExitCode {
             json,
         } => run_index(path, source_id, json),
         Command::Serve { roots, bind, path } => run_serve(roots, bind, path, None).await,
+        Command::Export { root, out, full } => export_command(&root, out.as_deref(), full),
         Command::Eval {
             root,
             queries,
