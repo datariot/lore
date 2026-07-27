@@ -45,3 +45,24 @@ pub fn rel_path(root: &Path, path: &Path) -> String {
     let rel = path.strip_prefix(root).unwrap_or(path);
     rel_to_posix(rel)
 }
+
+/// File modification time as Unix epoch seconds, or `None` if the platform
+/// didn't report one (or the mtime predates the epoch). Stamped onto each
+/// `DocumentIndex` at index time so freshness is a persisted fact.
+pub fn file_mtime_secs(path: &Path) -> Option<u64> {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
+/// Current wall-clock time as Unix epoch seconds. Used at query time to
+/// turn a document's stored mtime into an age.
+pub fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}

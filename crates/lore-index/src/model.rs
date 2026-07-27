@@ -49,6 +49,11 @@ pub struct DocumentIndex {
     pub file_hash: u64,
     /// Decoded frontmatter, if any.
     pub frontmatter: Option<serde_json::Value>,
+    /// File modification time as Unix epoch seconds, captured at index time.
+    /// `None` when the filesystem didn't report an mtime. Persisted (see the
+    /// v3 index magic) so freshness survives a reload without re-stat'ing.
+    #[serde(default)]
+    pub modified_at: Option<u64>,
     /// Arena of nodes. Index into this vec equals the `NodeId.0`.
     pub nodes: Vec<HeadingNode>,
     /// Top-level nodes (level-1 headings, or first-heading ancestry roots).
@@ -65,6 +70,15 @@ impl DocumentIndex {
     }
     pub fn node_mut(&mut self, id: NodeId) -> Option<&mut HeadingNode> {
         self.nodes.get_mut(id.index())
+    }
+
+    /// Age in whole days relative to `now_unix` (also Unix epoch seconds),
+    /// saturating at 0. `None` when no mtime was captured. The staleness
+    /// signal an agent reads to decide whether to trust a hit or re-verify.
+    pub fn age_days(&self, now_unix: u64) -> Option<u32> {
+        let modified = self.modified_at?;
+        let secs = now_unix.saturating_sub(modified);
+        Some((secs / 86_400).min(u32::MAX as u64) as u32)
     }
 
     /// The author-written `description` from frontmatter, if present and a

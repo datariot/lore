@@ -83,6 +83,7 @@ impl LoreServer {
     ) -> Result<Json<ListDocumentsResponse>, McpError> {
         let handle = self.corpus_handle(&req.source_id)?;
         let corpus = handle.read();
+        let now = crate::config::now_unix_secs();
 
         let prefix = req.path_prefix.as_deref();
         let filters = req.frontmatter.as_ref();
@@ -110,6 +111,7 @@ impl LoreServer {
                 title: doc.nodes.first().map(|n| n.title.clone()),
                 description: doc.description().map(str::to_string),
                 node_count: doc.nodes.len(),
+                age_days: doc.age_days(now),
                 frontmatter: if req.include_frontmatter {
                     doc.frontmatter.clone()
                 } else {
@@ -184,7 +186,12 @@ impl LoreServer {
     ) -> Result<Json<CorpusMapResponse>, McpError> {
         let handle = self.corpus_handle(&req.source_id)?;
         let corpus = handle.read();
-        let root = build_corpus_map(&corpus, req.path_prefix.as_deref(), req.max_depth);
+        let root = build_corpus_map(
+            &corpus,
+            req.path_prefix.as_deref(),
+            req.max_depth,
+            crate::config::now_unix_secs(),
+        );
         Ok(Json(CorpusMapResponse {
             source_id: corpus.source.to_string(),
             root,
@@ -241,13 +248,14 @@ impl LoreServer {
                     text: l.text.clone(),
                 })
                 .collect(),
+            age_days: resolved.doc.age_days(crate::config::now_unix_secs()),
         }))
     }
 
     // ---- search -------------------------------------------------------------
 
     #[tool(
-        description = "BM25 keyword search over heading titles, path segments, and the per-section first-sentence summary. Returns ranked hits with a summary line each, plus a `coverage` verdict: `full` = every query term exists in this corpus, `partial` = some do (see `unmatched_terms`), `none` = the corpus does not contain your vocabulary — treat empty/weak results as authoritative and STOP rather than rephrasing and retrying. Tokens are lowercased; English stopwords and tokens shorter than two characters are skipped. Prefix a token with `-` to exclude any node containing it (e.g., `kafka -lambda`). No phrase or proximity operators. Set `group_by` to `\"doc\"` to collapse same-document hits into one primary plus up to `secondary_limit` (default 3) nested same-document sections — useful for narrow queries that concentrate in a single file."
+        description = "BM25 keyword search over heading titles, path segments, and the per-section first-sentence summary. Returns ranked hits with a summary line each, plus a `coverage` verdict: `full` = every query term exists in this corpus, `partial` = some do (see `unmatched_terms`), `none` = the corpus does not contain your vocabulary — treat empty/weak results as authoritative and STOP rather than rephrasing and retrying. Tokens are lowercased; English stopwords and tokens shorter than two characters are skipped. Prefix a token with `-` to exclude any node containing it (e.g., `kafka -lambda`). No phrase or proximity operators. Set `group_by` to `\"doc\"` to collapse same-document hits into one primary plus up to `secondary_limit` (default 3) nested same-document sections — useful for narrow queries that concentrate in a single file. Each hit reports `age_days` (how old the source document is); older documents are likelier stale, so weigh recency and verify before asserting. Pass `stale_after_days` to get a `stale` boolean per hit instead of reasoning about the age yourself."
     )]
     async fn search(
         &self,
@@ -255,6 +263,7 @@ impl LoreServer {
     ) -> Result<Json<SearchResponse>, McpError> {
         let handle = self.corpus_handle(&req.source_id)?;
         let corpus = handle.read();
+        let now = crate::config::now_unix_secs();
 
         let hits = match req.group_by {
             GroupBy::Section => lore_search::search(&corpus, &req.query, req.limit)
@@ -262,6 +271,7 @@ impl LoreServer {
                 .filter_map(|h| {
                     let doc = corpus.doc(h.doc)?;
                     let node = doc.node(h.node)?;
+                    let age_days = doc.age_days(now);
                     Some(SearchHit {
                         rel_path: doc.rel_path.clone(),
                         doc_id: h.doc.0,
@@ -270,6 +280,8 @@ impl LoreServer {
                         heading_path: node.path.0.clone(),
                         summary: node.summary.clone(),
                         description: doc.description().map(str::to_string),
+                        age_days,
+                        stale: stale_flag(age_days, req.stale_after_days),
                         score: h.score,
                         secondary_hits: Vec::new(),
                     })
@@ -281,6 +293,7 @@ impl LoreServer {
                     .filter_map(|g| {
                         let doc = corpus.doc(g.primary.doc)?;
                         let primary_node = doc.node(g.primary.node)?;
+                        let age_days = doc.age_days(now);
                         let secondary_hits = g
                             .secondary
                             .into_iter()
@@ -303,6 +316,8 @@ impl LoreServer {
                             heading_path: primary_node.path.0.clone(),
                             summary: primary_node.summary.clone(),
                             description: doc.description().map(str::to_string),
+                            age_days,
+                            stale: stale_flag(age_days, req.stale_after_days),
                             score: g.primary.score,
                             secondary_hits,
                         })
@@ -332,6 +347,7 @@ impl LoreServer {
     ) -> Result<Json<BacklinksResponse>, McpError> {
         let handle = self.corpus_handle(&req.source_id)?;
         let corpus = handle.read();
+        let now = crate::config::now_unix_secs();
 
         // Section mode: resolve target + anchor to concrete (doc, node)
         // pairs and read the section-level table built at index time.
@@ -380,6 +396,7 @@ impl LoreServer {
                         level: node.level,
                         heading_path: node.path.0.clone(),
                         summary: node.summary.clone(),
+                        age_days: doc.age_days(now),
                     });
                     if out.len() >= req.limit {
                         break 'targets;
@@ -418,6 +435,7 @@ impl LoreServer {
                     level: node.level,
                     heading_path: node.path.0.clone(),
                     summary: node.summary.clone(),
+                    age_days: doc.age_days(now),
                 });
                 if out.len() >= req.limit {
                     break;
@@ -460,6 +478,7 @@ impl LoreServer {
         }
         all.sort_by_key(|t| std::cmp::Reverse(t.2));
         all.truncate(req.limit);
+        let now = crate::config::now_unix_secs();
         let nodes = all
             .into_iter()
             .filter_map(|(did, node, count)| {
@@ -472,6 +491,7 @@ impl LoreServer {
                     heading_path: node.path.0.clone(),
                     summary: node.summary.clone(),
                     access_count: count,
+                    age_days: doc.age_days(now),
                 })
             })
             .collect();
@@ -710,6 +730,13 @@ fn resolve_node<'a>(
         doc_id,
         node_id: node.id,
     })
+}
+
+/// Resolve the optional `stale_after_days` threshold against a document's
+/// age into the `stale` field. `None` when the caller didn't ask; when they
+/// did but the age is unknown, the document can't be called stale (`false`).
+fn stale_flag(age_days: Option<u32>, threshold: Option<u32>) -> Option<bool> {
+    threshold.map(|t| age_days.is_some_and(|a| a > t))
 }
 
 fn source_not_found(id: &str) -> McpError {

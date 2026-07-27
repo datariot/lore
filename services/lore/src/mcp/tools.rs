@@ -120,6 +120,9 @@ pub struct CorpusMapDoc {
     /// Author-written frontmatter `description`, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Age of the document in whole days at query time. `None` if mtime unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_days: Option<u32>,
     /// Heading tree for the document, depth-capped by the request's
     /// `max_depth` (top-level headings only by default).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -218,6 +221,7 @@ pub(crate) fn build_corpus_map(
     corpus: &lore_index::CorpusIndex,
     path_prefix: Option<&str>,
     max_depth: Option<u8>,
+    now_unix: u64,
 ) -> CorpusFolder {
     let mut build = FolderBuild::default();
     for (i, doc) in corpus.documents.iter().enumerate() {
@@ -234,6 +238,7 @@ pub(crate) fn build_corpus_map(
             doc_id: i as u32,
             title: doc.nodes.first().map(|n| n.title.clone()),
             description: doc.description().map(str::to_string),
+            age_days: doc.age_days(now_unix),
             headings: doc_headings(doc, max_depth),
         };
         build.insert(&segments, map_doc);
@@ -271,6 +276,10 @@ pub struct SectionResponse {
     pub byte_range: [u32; 2],
     pub content: String,
     pub outbound_links: Vec<LinkInfo>,
+    /// Age of the source document in whole days at fetch time. `None` if the
+    /// filesystem didn't report an mtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_days: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -315,6 +324,11 @@ pub struct SearchRequest {
     /// nest under each primary. Ignored in section mode.
     #[serde(default = "default_secondary_limit")]
     pub secondary_limit: usize,
+    /// When set, each hit gets a `stale` boolean: `true` if its document is
+    /// older than this many days. Lets the agent get a verdict instead of
+    /// reasoning about `age_days` itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_after_days: Option<u32>,
 }
 
 fn default_limit() -> usize {
@@ -337,6 +351,14 @@ pub struct SearchHit {
     /// A curated retrieval hook — read this before the body-derived `summary`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Age of the source document in whole days at query time. Older hits are
+    /// more likely stale — verify before asserting. `None` if mtime unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_days: Option<u32>,
+    /// Set only when the request passes `stale_after_days`: `true` when this
+    /// document is older than that threshold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale: Option<bool>,
     pub score: f32,
     /// In `group_by: "doc"` mode, additional matching sections from the
     /// same document, ranked by score. Empty in section mode.
@@ -465,6 +487,8 @@ pub struct Backlink {
     pub level: u8,
     pub heading_path: Vec<String>,
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_days: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -501,6 +525,8 @@ pub struct HotNode {
     pub heading_path: Vec<String>,
     pub summary: String,
     pub access_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_days: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -584,6 +610,9 @@ pub struct DocumentSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub node_count: usize,
+    /// Age of the document in whole days. `None` if mtime unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_days: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frontmatter: Option<serde_json::Value>,
 }
@@ -728,7 +757,7 @@ mod tests {
             "docs/guide/setup.md",
             "docs/guide/deploy.md",
         ]);
-        let root = build_corpus_map(&corpus, None, None);
+        let root = build_corpus_map(&corpus, None, None, 0);
 
         assert_eq!(root.path, "");
         assert_eq!(root.doc_count, 4, "recursive count over the whole tree");
@@ -752,7 +781,7 @@ mod tests {
     #[test]
     fn corpus_map_path_prefix_selects_subtree() {
         let corpus = corpus_of(&["README.md", "docs/intro.md", "other/note.md"]);
-        let root = build_corpus_map(&corpus, Some("docs/"), None);
+        let root = build_corpus_map(&corpus, Some("docs/"), None, 0);
         assert_eq!(root.doc_count, 1, "only docs/ matched");
         assert!(
             root.documents.is_empty(),
@@ -771,7 +800,7 @@ mod tests {
             build_document(SourceId::new("t"), "a.md", "# Root\n\n## Child\n\nbody.\n").unwrap(),
         );
         c.rebuild_indices();
-        let root = build_corpus_map(&c, None, None);
+        let root = build_corpus_map(&c, None, None, 0);
         let doc = &root.documents[0];
         assert_eq!(doc.headings.len(), 1, "root heading only");
         assert!(
@@ -784,7 +813,7 @@ mod tests {
         );
 
         // With max_depth 2 the child is included.
-        let deep = build_corpus_map(&c, None, Some(2));
+        let deep = build_corpus_map(&c, None, Some(2), 0);
         assert_eq!(deep.documents[0].headings[0].children.len(), 1);
     }
 }

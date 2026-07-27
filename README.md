@@ -58,6 +58,8 @@ To run it continuously against a live vault, see [docs/daily-driver.md](docs/dai
 
 > **Wire-format break (2026-07):** every tool response now names the heading-segment list `heading_path` (previously `path`), matching the request parameter of the same name, and `table_of_contents` returns a nested `roots[].children[]` tree instead of a flat `entries[]` array.
 
+> **Index format v3 (2026-07):** the on-disk index now persists each document's modification time so search results can report `age_days`. v2 indexes are rejected with a clear message; re-run `lore index <root>` to rebuild.
+
 ## MCP tools
 
 | Tool | What it does |
@@ -67,7 +69,7 @@ To run it continuously against a live vault, see [docs/daily-driver.md](docs/dai
 | `corpus_map` | Navigation map of a whole corpus: the folder hierarchy (from document paths) nested folders → documents, each with its title, description, and a heading preview. The orient-yourself call for a large source. `path_prefix` maps one subtree. |
 | `get_section` | Retrieve a section by heading path or node id. O(1) byte-range slice via mmap. |
 | `get_by_path` | Convenience form: `file.md#Heading > Subheading`. |
-| `search` | BM25 ranking over titles, path segments, and summaries. Porter-stemmed (so `alarm` finds `alarms`). `-term` excludes. `group_by: "doc"` collapses same-document hits. Access-count boost. Returns a `coverage` verdict (`full`/`partial`/`none`) so an agent can tell "not in this corpus" from "no good match" and stop instead of retrying. |
+| `search` | BM25 ranking over titles, path segments, and summaries. Porter-stemmed (so `alarm` finds `alarms`). `-term` excludes. `group_by: "doc"` collapses same-document hits. Access-count boost. Returns a `coverage` verdict (`full`/`partial`/`none`) so an agent can tell "not in this corpus" from "no good match" and stop instead of retrying. Each hit reports `age_days`; pass `stale_after_days` for a per-hit `stale` boolean. |
 | `backlinks` | Every section that links *to* a target — precomputed at index time. `target_anchor` narrows to links aimed at one section (`[[Page#Heading]]`). |
 | `recent_hot` | Top-N sections by access count. Agent usage as the importance signal. |
 | `neighbors` | Parent, prev/next sibling, children of a node. Navigate one hop at a time. |
