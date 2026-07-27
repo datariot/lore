@@ -36,6 +36,7 @@ cargo run -p lore-index --example dump_tree -- file.md   # debug heading tree
 cargo run -p lore -- index /path/to/vault
 cargo run -p lore -- serve -r /path/to/vault
 cargo run -p lore -- watch -r /path/to/vault --debounce-ms 250
+cargo run -p lore -- eval -r /path/to/vault -q eval/mini-kb.jsonl   # retrieval effectiveness
 ```
 
 ## Design invariants
@@ -45,6 +46,17 @@ cargo run -p lore -- watch -r /path/to/vault --debounce-ms 250
 3. **No indexing work at query time.** Everything derived (inverted index, backlinks, trigrams, field lengths, path_to_doc) is built in `CorpusIndex::rebuild_indices`. If you add a new derived structure, populate it there and clear it at the top.
 4. **Registry uses `Arc<RwLock<CorpusIndex>>`** — queries take read locks, the watcher takes a write lock during re-index. Don't hold a read lock across an `.await`.
 5. **Mmap cache is keyed by `(SourceId, rel_path)`** and invalidated on reindex/remove.
+
+## Measuring effectiveness
+
+`lore eval` scores retrieval quality against a labeled JSONL query set
+(Success@k, MRR, coverage-verdict accuracy) — the quality counterpart to the
+Criterion latency bench. Golden sets live in `eval/`: `mini-kb.jsonl` is
+CI-gated (`tests/eval_fixture.rs`) at 1.0 across the board on the fixture;
+`knowledge-base.candidate.jsonl` is a David-corrected vault set. Run it before
+and after any retrieval change and diff the numbers; when a metric legitimately
+moves, update the floor *and* the commit message. Methodology + baseline in
+`docs/decisions/0004-effectiveness-harness.md`.
 
 ## Test strategy
 

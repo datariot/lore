@@ -41,6 +41,9 @@ lore serve -r /path/to/your/vault
 
 # 3. Or combine — serve and watch for changes:
 lore watch -r /path/to/your/vault
+
+# 4. Measure retrieval quality against a labeled query set.
+lore eval -r /path/to/your/vault -q eval/mini-kb.jsonl
 ```
 
 The MCP endpoint is at `http://127.0.0.1:7331/mcp` by default. Point any MCP-compatible client at it — for Claude Code:

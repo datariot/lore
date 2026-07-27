@@ -1,0 +1,14 @@
+// Golden query set for the mini-kb test fixture. Deterministic ground truth,
+// run in CI (see services/lore/tests/eval_fixture.rs). Each line exercises a
+// specific retrieval behavior; keep it in sync with tests/fixtures/mini-kb.
+//
+// Schema: {"query", "relevant": [rel_path | rel_path#Heading > Sub], "expected_coverage"?, "note"?}
+
+{"query": "purpose of the fixture", "relevant": ["docs/intro.md#Introduction > Purpose"], "expected_coverage": "full", "note": "section-level target"}
+{"query": "components parser indexer server", "relevant": ["docs/architecture.md#Architecture > Components"], "expected_coverage": "partial", "note": "Components heading ranks #1, but parser/indexer/server live in body bullets that aren't in the indexed summary field -> partial coverage. Harness caught this mislabel."}
+{"query": "data flow", "relevant": ["docs/architecture.md#Architecture > Data Flow"], "expected_coverage": "full"}
+{"query": "scope frontmatter wiki-links", "relevant": ["docs/intro.md#Introduction > Scope"], "expected_coverage": "full"}
+{"query": "architecture", "relevant": ["docs/architecture.md"], "expected_coverage": "full", "note": "doc-level target: any section counts"}
+{"query": "zephyrine", "relevant": ["README.md"], "expected_coverage": "full", "note": "answer lives ONLY in README frontmatter description (KB-646)"}
+{"query": "kubernetes helm terraform rollout", "relevant": [], "expected_coverage": "none", "note": "out-of-domain probe (KB-642): corpus has none of this vocabulary"}
+{"query": "overview architecture kubernetes", "relevant": [], "expected_coverage": "partial", "note": "mixed: overview/architecture present, kubernetes absent"}

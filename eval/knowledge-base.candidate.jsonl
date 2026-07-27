@@ -1,0 +1,37 @@
+// CANDIDATE vault query set — DAVID, CORRECT ME, then rename to knowledge-base.jsonl.
+//
+// This is a DRAFT to react to, not ground truth. Each `relevant` list was
+// auto-filled with search's own top-2 hits, so any query where search is
+// already wrong will have wrong labels here — that's the point: fix the
+// labels to the docs you'd actually want, and the harness then measures how
+// far search is from your intent. A tuned set is worth more than a big one;
+// prune/replace freely.
+//
+// How to correct a line:
+//   - relevant: the rel_path(s) (or "rel_path#Heading > Sub") you'd consider
+//     a correct answer. Delete the auto-filled ones that are wrong.
+//   - expected_coverage: full = all query terms are somewhere in the corpus,
+//     partial = some, none = out-of-domain. Fix if the auto value looks off.
+//   - Run: lore eval -r ~/Workspace/knowledge-base -q eval/knowledge-base.jsonl
+//
+// FLAGGED as likely-wrong (search returned something off — good test cases
+// once you set the RIGHT answer):
+//   - "vpc flow log reduction": returned Calendar/Weekly notes, but the real
+//     doc is vpcflow_task_reduction_analysis.md — a genuine ranking miss.
+//   - "lore structure-aware retrieval": returned Glade/Myxo research; is there
+//     even a lore doc in the vault? If not, this is out-of-domain (none).
+//   (Resolved during bootstrap: an earlier "quokka photosynthesis nonsense"
+//   probe returned `partial`, which turned out CORRECT — "nonsense" stems to
+//   a real word present in the vault, and coverage precisely flagged only
+//   that term. Lesson baked into the set below: an out-of-domain probe needs
+//   genuinely-absent vocabulary. Good precision evidence for KB-642.)
+
+{"query": "kafka connect alerts", "relevant": ["Entities/Projects/Security Logging Pipeline/Reference/Alert-Fixes/12-complete-alert-coverage.md", "Entities/Projects/Security Logging Pipeline/Reference/Observability/04-implementation-checklist.md"], "expected_coverage": "full", "note": "CANDIDATE"}
+{"query": "msk iam authentication", "relevant": ["Entities/Projects/Security Logging Pipeline/Documentation/adr/003-msk-iam-authentication.md"], "expected_coverage": "full", "note": "CANDIDATE"}
+{"query": "bazel buildkite ci", "relevant": ["Entities/Projects/Security Logging Pipeline/Reference/Great-Lakes/bazel-buildkite-review/README.md"], "expected_coverage": "full", "note": "CANDIDATE"}
+{"query": "vpc flow log reduction", "relevant": ["Calendar/Weekly/2025-W19.md", "Calendar/Weekly/2025-W26.md"], "expected_coverage": "full", "note": "CANDIDATE - FLAGGED: expected vpcflow_task_reduction_analysis.md; search returned calendar notes"}
+{"query": "consumer group lag optimization", "relevant": ["Entities/Projects/Security Logging Pipeline/Documentation/README.md", "Entities/Projects/Security Logging Pipeline/Reference/Observability/01-msk-observability.md"], "expected_coverage": "full", "note": "CANDIDATE"}
+{"query": "grove sink connector", "relevant": ["Entities/Projects/Security Logging Pipeline/Reference/Observability/06-current-findings.md"], "expected_coverage": "full", "note": "CANDIDATE"}
+{"query": "lore structure-aware retrieval", "relevant": ["Entities/Projects/Glade/Research/2026-02-23 Gemini Research - GraphRAG for Expert Network Compliance.md", "Entities/Projects/Hackathon March 2026/Myxo/cpg-landscape-research.md"], "expected_coverage": "full", "note": "CANDIDATE - FLAGGED: likely no lore doc in vault; may be out-of-domain (none)"}
+{"query": "obsidian faceted entity graph", "relevant": ["Entities/Projects/Knowledge Base/README.md", "Meta/Reference/Migration-Plan.md"], "expected_coverage": "full", "note": "CANDIDATE"}
+{"query": "quokka photosynthesis marsupial", "relevant": [], "expected_coverage": "none", "note": "CANDIDATE - out-of-domain probe with genuinely-absent vocabulary; should be none"}
