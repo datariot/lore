@@ -142,7 +142,8 @@ impl CorpusRegistry {
             std::fs::read(&full).map_err(|e| Error::Io(format!("read {}: {e}", full.display())))?;
         let src =
             std::str::from_utf8(&bytes).map_err(|e| Error::Parse(format!("{rel_path}: {e}")))?;
-        let new_doc = build_document(source.clone(), rel_path, src)?;
+        let mut new_doc = build_document(source.clone(), rel_path, src)?;
+        new_doc.modified_at = crate::config::file_mtime_secs(&full);
 
         {
             let mut guard = handle.write();

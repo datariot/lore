@@ -116,6 +116,9 @@ fn assemble(
         rel_path,
         file_hash,
         frontmatter: frontmatter.map(|f| f.data),
+        // Set by the service layer from filesystem metadata; the pure
+        // builder has no path to stat.
+        modified_at: None,
         nodes,
         roots,
         source_len,
@@ -278,6 +281,23 @@ mod tests {
         let src = "# H\n\nHook sentence. Extra prose.\n";
         let doc = build(src);
         assert_eq!(doc.nodes[0].summary, "Hook sentence.");
+    }
+
+    #[test]
+    fn age_days_from_mtime() {
+        let mut doc = build("# A\n\nbody.\n");
+        // Builder leaves mtime unset until the service stamps it.
+        assert_eq!(doc.modified_at, None);
+        assert_eq!(doc.age_days(1_000_000), None);
+
+        // A document modified 3 days before "now" reads as 3 days old.
+        let now = 10 * 86_400;
+        doc.modified_at = Some(7 * 86_400);
+        assert_eq!(doc.age_days(now), Some(3));
+
+        // A future mtime (clock skew) saturates at 0, never underflows.
+        doc.modified_at = Some(now + 86_400);
+        assert_eq!(doc.age_days(now), Some(0));
     }
 
     #[test]

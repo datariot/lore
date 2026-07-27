@@ -102,6 +102,18 @@ async fn mcp_server_end_to_end() {
     // Build index for fixture corpus.
     let dir = tempdir().unwrap();
     copy_fixture_to(dir.path());
+    // Age docs/architecture.md to a known 100 days old so the staleness
+    // signal (KB-647) is deterministic — mtime is captured at index time, so
+    // this must happen before indexing. (macOS fs::copy preserves mtime, so
+    // we can't assume freshly-copied files read as age 0.)
+    let hundred_days_ago =
+        std::time::SystemTime::now() - std::time::Duration::from_secs(100 * 86_400);
+    fs::File::options()
+        .write(true)
+        .open(dir.path().join("docs/architecture.md"))
+        .unwrap()
+        .set_modified(hundred_days_ago)
+        .unwrap();
     index_command(IndexOptions::new(dir.path())).unwrap();
 
     // Load into registry and start server.
@@ -397,6 +409,54 @@ async fn mcp_server_end_to_end() {
             .as_array()
             .unwrap()
             .is_empty()
+    );
+    // Staleness (KB-647): the top hit is architecture.md, which we aged to
+    // 100 days before indexing. `stale` is absent without a threshold.
+    assert_eq!(hits[0]["rel_path"], "docs/architecture.md");
+    let age = hits[0]["age_days"].as_u64().expect("age_days present");
+    assert!(
+        (99..=100).contains(&age),
+        "architecture.md should read ~100 days old, got {age}"
+    );
+    assert!(
+        hits[0].get("stale").is_none(),
+        "no stale flag without a threshold"
+    );
+
+    // 6-stale) stale_after_days threshold: 30 days flags the 100-day doc
+    // stale; a threshold beyond its age does not.
+    let (stale_resp, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "search",
+            "arguments": {"source_id": source_id, "query": "architecture", "stale_after_days": 30}
+        }),
+        &session,
+    )
+    .await;
+    let shit = &stale_resp["result"]["structuredContent"]["hits"][0];
+    assert_eq!(
+        shit["stale"], true,
+        "100-day doc is older than the 30-day threshold"
+    );
+
+    let (fresh_resp, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "search",
+            "arguments": {"source_id": source_id, "query": "architecture", "stale_after_days": 365}
+        }),
+        &session,
+    )
+    .await;
+    let fhit = &fresh_resp["result"]["structuredContent"]["hits"][0];
+    assert_eq!(
+        fhit["stale"], false,
+        "100-day doc is within a 365-day threshold"
     );
 
     // 6a) coverage: a nonsense query the corpus doesn't contain returns

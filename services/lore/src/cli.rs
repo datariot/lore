@@ -112,7 +112,9 @@ fn read_and_build(
     let rel = rel_path(root, path);
     let bytes = std::fs::read(path)?;
     let src = std::str::from_utf8(&bytes).map_err(|e| Error::Parse(format!("{rel}: {e}")))?;
-    build_document(source.clone(), rel, src)
+    let mut doc = build_document(source.clone(), rel, src)?;
+    doc.modified_at = crate::config::file_mtime_secs(path);
+    Ok(doc)
 }
 
 fn canonicalize(p: &Path) -> Result<PathBuf> {

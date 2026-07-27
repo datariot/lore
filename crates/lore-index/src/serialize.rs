@@ -16,7 +16,9 @@ use crate::corpus::CorpusIndex;
 // v2 bumped the magic when Porter stemming landed in `tokenize`. v1
 // indexes have unstemmed inverted-index keys and would mis-rank against a
 // v2 query stream; reject them so users re-run `lore index`.
-const MAGIC: &str = "lore-index-v2";
+// v3 added the persisted `DocumentIndex::modified_at` (file mtime) — a v2
+// index lacks it and would report every document as unknown-age; reject it.
+const MAGIC: &str = "lore-index-v3";
 
 /// Write-side envelope — borrows the corpus so we don't clone 20 MB of data
 /// to stamp a magic string on top.
