@@ -17,11 +17,12 @@ use crate::config::index_path;
 use crate::mcp::registry::CorpusRegistry;
 use crate::mcp::tools::{
     AddSourceRequest, AddSourceResponse, Backlink, BacklinksRequest, BacklinksResponse,
-    DocumentSummary, GetByPathRequest, GetSectionRequest, GroupBy, HotNode, HotRequest,
-    HotResponse, LinkInfo, ListDocumentsRequest, ListDocumentsResponse, ListSourcesResponse,
-    NeighborRef, NeighborsRequest, NeighborsResponse, ResolvedNode, SearchHit, SearchRequest,
-    SearchResponse, SectionHit, SectionResponse, SourceSummary, TocDocument, TocRequest,
-    TocResponse, frontmatter_matches, to_heading_path, toc_tree,
+    CorpusMapRequest, CorpusMapResponse, DocumentSummary, GetByPathRequest, GetSectionRequest,
+    GroupBy, HotNode, HotRequest, HotResponse, LinkInfo, ListDocumentsRequest,
+    ListDocumentsResponse, ListSourcesResponse, NeighborRef, NeighborsRequest, NeighborsResponse,
+    ResolvedNode, SearchHit, SearchRequest, SearchResponse, SectionHit, SectionResponse,
+    SourceSummary, TocDocument, TocRequest, TocResponse, build_corpus_map, frontmatter_matches,
+    to_heading_path, toc_tree,
 };
 
 #[derive(Clone)]
@@ -169,6 +170,24 @@ impl LoreServer {
         Ok(Json(TocResponse {
             source_id: corpus.source.to_string(),
             documents,
+        }))
+    }
+
+    // ---- corpus_map ---------------------------------------------------------
+
+    #[tool(
+        description = "Return a navigation map of an entire corpus: the folder hierarchy (from document paths) nested folders → documents, each document carrying its title, frontmatter description, and a top-level heading preview. This is the orient-yourself call for a large source — folders are the structure the author already wrote. Use `path_prefix` to map one subtree, and `max_depth` to include deeper headings under each document (default: top-level headings only; call `table_of_contents` on a specific document to drill all the way in)."
+    )]
+    async fn corpus_map(
+        &self,
+        Parameters(req): Parameters<CorpusMapRequest>,
+    ) -> Result<Json<CorpusMapResponse>, McpError> {
+        let handle = self.corpus_handle(&req.source_id)?;
+        let corpus = handle.read();
+        let root = build_corpus_map(&corpus, req.path_prefix.as_deref(), req.max_depth);
+        Ok(Json(CorpusMapResponse {
+            source_id: corpus.source.to_string(),
+            root,
         }))
     }
 

@@ -69,7 +69,7 @@ If you add a new derived index or a new MCP tool, write:
 
 ## MCP surface
 
-Nine tools in `services/lore/src/mcp/server.rs`, all routed by `#[tool_router]`. Request/response types live in `mcp/tools.rs` so the server file stays readable. Tools take `Parameters<Req>` and return `Json<Resp>`.
+The MCP tools live in `services/lore/src/mcp/server.rs`, all routed by `#[tool_router]`. Request/response types live in `mcp/tools.rs` so the server file stays readable. Tools take `Parameters<Req>` and return `Json<Resp>`.
 
 Naming rules for wire fields: the heading-segment list is always `heading_path` — in requests *and* responses; `rel_path` is always the file path. Never introduce a bare `path` field. `table_of_contents` returns the tree nested (`roots[].children[]`), not a flat list.
 
@@ -88,7 +88,7 @@ When adding a tool:
 - `crates/lore-index/src/corpus.rs` — `rebuild_indices`, inverted index, canonical link keys
 - `crates/lore-search/src/bm25.rs` — ranker
 - `services/lore/src/mcp/registry.rs` — `CorpusRegistry`, mmap cache, reindex
-- `services/lore/src/mcp/server.rs` — all nine MCP tool handlers
+- `services/lore/src/mcp/server.rs` — all MCP tool handlers
 - `services/lore/src/watch.rs` — watcher → registry bridge
 
 ## Common gotchas

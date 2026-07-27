@@ -165,6 +165,7 @@ async fn mcp_server_end_to_end() {
         "list_sources",
         "list_documents",
         "table_of_contents",
+        "corpus_map",
         "get_section",
         "search",
         "add_source",
@@ -265,6 +266,80 @@ async fn mcp_server_end_to_end() {
         let rp = d["rel_path"].as_str().unwrap();
         assert!(rp.starts_with("docs/"), "leaked non-matching doc: {rp}");
     }
+
+    // 4c) corpus_map — the folder hierarchy from document paths. The fixture
+    // is README.md at the root plus docs/intro.md and docs/architecture.md,
+    // so the map root holds one document (README) and one `docs/` subfolder
+    // with two documents.
+    let source_id_str = dir.path().file_name().unwrap().to_str().unwrap();
+    let (map_resp, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "corpus_map",
+            "arguments": {"source_id": source_id_str}
+        }),
+        &session,
+    )
+    .await;
+    let root = &map_resp["result"]["structuredContent"]["root"];
+    assert_eq!(root["path"], "", "root folder has empty path");
+    assert_eq!(root["doc_count"], 3, "three documents across the corpus");
+    let root_docs = root["documents"].as_array().unwrap();
+    assert_eq!(root_docs.len(), 1, "only README.md lives at the root");
+    assert_eq!(root_docs[0]["rel_path"], "README.md");
+    // README carries its curated frontmatter description hook.
+    assert!(
+        root_docs[0]["description"]
+            .as_str()
+            .unwrap()
+            .contains("zephyrine")
+    );
+    // Top-level heading preview is present but shallow (no nested children).
+    let readme_headings = root_docs[0]["headings"].as_array().unwrap();
+    assert!(!readme_headings.is_empty());
+    assert!(
+        readme_headings[0]["children"].as_array().is_none()
+            || readme_headings[0]["children"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+        "default map preview is shallow — no nested children"
+    );
+    let folders = root["folders"].as_array().unwrap();
+    assert_eq!(folders.len(), 1, "one subfolder: docs/");
+    assert_eq!(folders[0]["path"], "docs/");
+    assert_eq!(folders[0]["doc_count"], 2);
+    let docs_folder_docs = folders[0]["documents"].as_array().unwrap();
+    assert_eq!(docs_folder_docs.len(), 2);
+    for d in docs_folder_docs {
+        assert!(
+            d["rel_path"].as_str().unwrap().starts_with("docs/"),
+            "doc misplaced in docs/ folder"
+        );
+    }
+
+    // 4d) corpus_map with path_prefix narrows to one subtree.
+    let (map_pref, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "corpus_map",
+            "arguments": {"source_id": source_id_str, "path_prefix": "docs/"}
+        }),
+        &session,
+    )
+    .await;
+    let proot = &map_pref["result"]["structuredContent"]["root"];
+    assert_eq!(proot["doc_count"], 2, "only the docs/ subtree");
+    // `documents` is omitted when empty (skip_serializing_if), so absent or
+    // [] both mean "no documents directly at the filtered root".
+    assert!(
+        proot["documents"].as_array().is_none_or(|a| a.is_empty()),
+        "no documents at the root once filtered to docs/"
+    );
 
     // 5) get_section by heading_path
     let (sec_resp, session) = rpc(

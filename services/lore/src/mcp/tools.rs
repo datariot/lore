@@ -3,8 +3,10 @@
 //! Kept separate from `server.rs` so the `#[tool_router]` impl stays readable
 //! and so we can share types with integration tests.
 
+use std::collections::BTreeMap;
+
 use lore_core::{HeadingPath, NodeId};
-use lore_index::DocId;
+use lore_index::{DocId, DocumentIndex};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -86,6 +88,157 @@ pub struct TocDocument {
 pub struct TocResponse {
     pub source_id: String,
     pub documents: Vec<TocDocument>,
+}
+
+// -----------------------------------------------------------------------------
+// corpus_map
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CorpusMapRequest {
+    pub source_id: String,
+    /// Restrict the map to documents whose `rel_path` starts with this
+    /// folder prefix (byte-wise, forward slashes). Omit for the whole corpus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_prefix: Option<String>,
+    /// Maximum heading depth to include under each document. `None` (the
+    /// default) shows only each document's top-level heading(s) as a
+    /// preview — call `table_of_contents` on a specific document to drill in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<u8>,
+}
+
+/// A document leaf in the corpus map: its identity, curated hooks, and a
+/// heading preview.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CorpusMapDoc {
+    pub rel_path: String,
+    pub doc_id: u32,
+    /// First level-1 heading title, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Author-written frontmatter `description`, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Heading tree for the document, depth-capped by the request's
+    /// `max_depth` (top-level headings only by default).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headings: Vec<TocEntry>,
+}
+
+/// A folder node: everything under one directory prefix, with its
+/// subfolders and the documents that live directly in it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CorpusFolder {
+    /// Folder path relative to the corpus root, ending in `/` (empty for the
+    /// corpus root itself).
+    pub path: String,
+    /// Number of documents anywhere in this folder's subtree.
+    pub doc_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<CorpusFolder>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documents: Vec<CorpusMapDoc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CorpusMapResponse {
+    pub source_id: String,
+    pub root: CorpusFolder,
+}
+
+/// Heading preview for a document in the corpus map: the full depth-capped
+/// tree when `max_depth` is set, otherwise just the roots (no children) so
+/// the map stays a navigation aid rather than a full TOC dump.
+fn doc_headings(doc: &DocumentIndex, max_depth: Option<u8>) -> Vec<TocEntry> {
+    match max_depth {
+        Some(_) => toc_tree(doc, max_depth),
+        None => doc
+            .roots
+            .iter()
+            .filter_map(|&nid| {
+                let n = doc.node(nid)?;
+                Some(TocEntry {
+                    node_id: n.id.0,
+                    level: n.level,
+                    title: n.title.clone(),
+                    heading_path: n.path.0.clone(),
+                    has_children: !n.children.is_empty(),
+                    kind: n.kind.clone(),
+                    children: Vec::new(),
+                })
+            })
+            .collect(),
+    }
+}
+
+/// Mutable intermediate for assembling the folder tree from flat rel_paths.
+#[derive(Default)]
+struct FolderBuild {
+    subfolders: BTreeMap<String, FolderBuild>,
+    documents: Vec<CorpusMapDoc>,
+}
+
+impl FolderBuild {
+    fn insert(&mut self, segments: &[String], doc: CorpusMapDoc) {
+        match segments.split_first() {
+            None => self.documents.push(doc),
+            Some((head, rest)) => self
+                .subfolders
+                .entry(head.clone())
+                .or_default()
+                .insert(rest, doc),
+        }
+    }
+
+    fn into_folder(self, path: String) -> CorpusFolder {
+        let mut doc_count = self.documents.len();
+        let mut folders = Vec::with_capacity(self.subfolders.len());
+        for (name, child) in self.subfolders {
+            let folder = child.into_folder(format!("{path}{name}/"));
+            doc_count += folder.doc_count;
+            folders.push(folder);
+        }
+        let mut documents = self.documents;
+        documents.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+        CorpusFolder {
+            path,
+            doc_count,
+            folders,
+            documents,
+        }
+    }
+}
+
+/// Build the corpus map: folders → documents → heading preview. Documents
+/// are filtered by `path_prefix` and placed into the folder tree implied by
+/// their `rel_path`. Pure projection over the loaded index — no derived
+/// state, safe to run at query time (invariant #3 covers *indexing* work).
+pub(crate) fn build_corpus_map(
+    corpus: &lore_index::CorpusIndex,
+    path_prefix: Option<&str>,
+    max_depth: Option<u8>,
+) -> CorpusFolder {
+    let mut build = FolderBuild::default();
+    for (i, doc) in corpus.documents.iter().enumerate() {
+        if let Some(p) = path_prefix
+            && !doc.rel_path.starts_with(p)
+        {
+            continue;
+        }
+        // Directory segments = everything but the final path component.
+        let mut segments: Vec<String> = doc.rel_path.split('/').map(str::to_string).collect();
+        segments.pop(); // drop the filename
+        let map_doc = CorpusMapDoc {
+            rel_path: doc.rel_path.clone(),
+            doc_id: i as u32,
+            title: doc.nodes.first().map(|n| n.title.clone()),
+            description: doc.description().map(str::to_string),
+            headings: doc_headings(doc, max_depth),
+        };
+        build.insert(&segments, map_doc);
+    }
+    build.into_folder(String::new())
 }
 
 // -----------------------------------------------------------------------------
@@ -546,4 +699,92 @@ pub(crate) struct ResolvedNode<'a> {
     #[allow(dead_code)]
     pub doc_id: DocId,
     pub node_id: NodeId,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lore_core::SourceId;
+    use lore_index::{CorpusIndex, build_document};
+    use std::path::PathBuf;
+
+    fn corpus_of(paths: &[&str]) -> CorpusIndex {
+        let mut c = CorpusIndex::new(SourceId::new("t"), PathBuf::from("/tmp"));
+        for p in paths {
+            // Give each doc one H1 so `title` / heading preview are populated.
+            let title = p.rsplit('/').next().unwrap();
+            let src = format!("# {title}\n\nbody.\n");
+            c.push_document(build_document(SourceId::new("t"), *p, &src).unwrap());
+        }
+        c.rebuild_indices();
+        c
+    }
+
+    #[test]
+    fn corpus_map_nests_folders_and_counts_subtrees() {
+        let corpus = corpus_of(&[
+            "README.md",
+            "docs/intro.md",
+            "docs/guide/setup.md",
+            "docs/guide/deploy.md",
+        ]);
+        let root = build_corpus_map(&corpus, None, None);
+
+        assert_eq!(root.path, "");
+        assert_eq!(root.doc_count, 4, "recursive count over the whole tree");
+        assert_eq!(root.documents.len(), 1, "only README at the root");
+        assert_eq!(root.documents[0].rel_path, "README.md");
+
+        assert_eq!(root.folders.len(), 1);
+        let docs = &root.folders[0];
+        assert_eq!(docs.path, "docs/");
+        assert_eq!(docs.doc_count, 3, "intro + guide subtree");
+        assert_eq!(docs.documents.len(), 1, "intro.md directly under docs/");
+
+        let guide = &docs.folders[0];
+        assert_eq!(guide.path, "docs/guide/");
+        assert_eq!(guide.doc_count, 2);
+        // Documents are sorted by rel_path for stable output.
+        assert_eq!(guide.documents[0].rel_path, "docs/guide/deploy.md");
+        assert_eq!(guide.documents[1].rel_path, "docs/guide/setup.md");
+    }
+
+    #[test]
+    fn corpus_map_path_prefix_selects_subtree() {
+        let corpus = corpus_of(&["README.md", "docs/intro.md", "other/note.md"]);
+        let root = build_corpus_map(&corpus, Some("docs/"), None);
+        assert_eq!(root.doc_count, 1, "only docs/ matched");
+        assert!(
+            root.documents.is_empty(),
+            "nothing lives at the root of docs/-only"
+        );
+        assert_eq!(root.folders.len(), 1);
+        assert_eq!(root.folders[0].path, "docs/");
+    }
+
+    #[test]
+    fn corpus_map_default_preview_is_shallow() {
+        // A doc with nested headings: default (max_depth None) shows only the
+        // root heading with no children; has_children flags the deeper tree.
+        let mut c = CorpusIndex::new(SourceId::new("t"), PathBuf::from("/tmp"));
+        c.push_document(
+            build_document(SourceId::new("t"), "a.md", "# Root\n\n## Child\n\nbody.\n").unwrap(),
+        );
+        c.rebuild_indices();
+        let root = build_corpus_map(&c, None, None);
+        let doc = &root.documents[0];
+        assert_eq!(doc.headings.len(), 1, "root heading only");
+        assert!(
+            doc.headings[0].children.is_empty(),
+            "no nested children in preview"
+        );
+        assert!(
+            doc.headings[0].has_children,
+            "but flags that a child exists"
+        );
+
+        // With max_depth 2 the child is included.
+        let deep = build_corpus_map(&c, None, Some(2));
+        assert_eq!(deep.documents[0].headings[0].children.len(), 1);
+    }
 }
