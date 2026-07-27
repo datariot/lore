@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use lore_service::{
-    CorpusRegistry, IndexOptions, ServeOptions, index_command, run_watcher, serve_http,
+    CorpusRegistry, IndexOptions, ServeOptions, eval_command, index_command, run_watcher,
+    serve_http,
 };
 
 #[derive(Parser)]
@@ -47,6 +48,22 @@ enum Command {
         #[arg(long, default_value = "/mcp")]
         path: String,
     },
+    /// Measure retrieval effectiveness: run a labeled query set through the
+    /// ranker and report Success@k, MRR, and coverage-verdict accuracy.
+    Eval {
+        /// Corpus root. Indexed on the fly if `.lore/index.json` is absent.
+        #[arg(short = 'r', long = "root", value_name = "DIR")]
+        root: PathBuf,
+        /// JSONL query set: one `{query, relevant, expected_coverage?}` per line.
+        #[arg(short = 'q', long = "queries", value_name = "FILE")]
+        queries: PathBuf,
+        /// Depth to search when locating the first relevant hit.
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        /// Emit the full summary as JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
     /// Serve corpora *and* watch their roots for changes, re-indexing
     /// affected files on the fly.
     Watch {
@@ -83,6 +100,12 @@ async fn main() -> ExitCode {
             json,
         } => run_index(path, source_id, json),
         Command::Serve { roots, bind, path } => run_serve(roots, bind, path, None).await,
+        Command::Eval {
+            root,
+            queries,
+            limit,
+            json,
+        } => run_eval_cmd(root, queries, limit, json),
         Command::Watch {
             roots,
             bind,
@@ -98,6 +121,50 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_eval_cmd(
+    root: PathBuf,
+    queries: PathBuf,
+    limit: usize,
+    json: bool,
+) -> lore_core::Result<()> {
+    let summary = eval_command(&root, &queries, limit)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+        return Ok(());
+    }
+
+    println!(
+        "eval: {total} queries ({judged} judged, {cov} coverage-scored)",
+        total = summary.total,
+        judged = summary.judged,
+        cov = summary.coverage_scored,
+    );
+    println!("  Success@1   {:.3}", summary.success_at_1);
+    println!("  Success@3   {:.3}", summary.success_at_3);
+    println!("  Success@10  {:.3}", summary.success_at_10);
+    println!("  MRR         {:.3}", summary.mrr);
+    println!(
+        "  Coverage    {:.3} ({}/{})",
+        summary.coverage_accuracy, summary.coverage_correct, summary.coverage_scored,
+    );
+    println!();
+    println!("  rank  cov      query");
+    for r in &summary.results {
+        let rank = match r.rank {
+            Some(n) => format!("{n}"),
+            None if r.judged => "MISS".to_string(),
+            None => "-".to_string(),
+        };
+        let cov = match r.coverage_ok {
+            Some(true) => format!("{} ok", r.coverage),
+            Some(false) => format!("{} BAD", r.coverage),
+            None => r.coverage.clone(),
+        };
+        println!("  {rank:<5} {cov:<8} {}", r.query);
+    }
+    Ok(())
 }
 
 fn run_index(path: PathBuf, source_id: Option<String>, json: bool) -> lore_core::Result<()> {
