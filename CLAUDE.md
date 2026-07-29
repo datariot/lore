@@ -99,6 +99,7 @@ When adding a tool:
 - `crates/lore-index/src/model.rs` — `HeadingNode`, `DocumentIndex`
 - `crates/lore-index/src/builder.rs` — AST → tree + range finalization + link/Dataview attachment
 - `crates/lore-index/src/corpus.rs` — `rebuild_indices`, inverted index, canonical link keys
+- `crates/lore-index/src/okf.rs` — Open Knowledge Format frontmatter projection (type/status/trust/stale_after)
 - `crates/lore-search/src/bm25.rs` — ranker
 - `services/lore/src/mcp/registry.rs` — `CorpusRegistry`, mmap cache, reindex
 - `services/lore/src/mcp/server.rs` — all MCP tool handlers
@@ -116,6 +117,7 @@ When adding a tool:
 - **`#[tool_handler]` must stay `(router = self.tool_router)`.** rmcp 2.x defaults to `Self::tool_router()`, rebuilding the whole router on every `call_tool`/`list_tools` — a query-time cost that violates invariant #3.
 - **`DocumentIndex.modified_at` is file mtime, captured at index time** (persisted, v3 magic). The *pure* builder can't stat, so the service stamps it after `build_document` in BOTH build paths (`cli::read_and_build` and `registry::reindex_document`) — add it to any new path that builds a doc from a file. Responses expose `age_days` (computed from `config::now_unix_secs()`), never the raw epoch.
 - **macOS `std::fs::copy` preserves mtime** (`fcopyfile COPYFILE_ALL`), so a copied fixture keeps its source mtime — don't assume a freshly-copied test file reads as age 0. Set an explicit mtime with `File::set_modified` *before* indexing when a test needs a known age.
+- **OKF fields are a pure frontmatter projection, not a derived index.** `okf.rs` reads `type`/`status`/`verified`/`stale_after` straight off `DocumentIndex.frontmatter` at query time (invariant #3 covers *indexing* work, not projection — same as `corpus_map`). Adding an OKF field means a new accessor + wiring it into the response structs; no `rebuild_indices` change and no index-format bump. Two staleness signals feed `stale`: author-declared `stale_after` (authoritative, fires with no request threshold) and the request's `stale_after_days` mtime cutoff — see `stale_flag` in `server.rs`. Decision: `docs/decisions/0005-okf-alignment.md`.
 
 ## Substack article
 

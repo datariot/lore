@@ -72,7 +72,7 @@ To run it continuously against a live vault, see [docs/daily-driver.md](docs/dai
 | `corpus_map` | Navigation map of a whole corpus: the folder hierarchy (from document paths) nested folders → documents, each with its title, description, and a heading preview. The orient-yourself call for a large source. `path_prefix` maps one subtree. |
 | `get_section` | Retrieve a section by heading path or node id. O(1) byte-range slice via mmap. |
 | `get_by_path` | Convenience form: `file.md#Heading > Subheading`. |
-| `search` | BM25 ranking over titles, path segments, and summaries. Porter-stemmed (so `alarm` finds `alarms`). `-term` excludes. `group_by: "doc"` collapses same-document hits. Access-count boost. Returns a `coverage` verdict (`full`/`partial`/`none`) so an agent can tell "not in this corpus" from "no good match" and stop instead of retrying. Each hit reports `age_days`; pass `stale_after_days` for a per-hit `stale` boolean. |
+| `search` | BM25 ranking over titles, path segments, and summaries. Porter-stemmed (so `alarm` finds `alarms`). `-term` excludes. `group_by: "doc"` collapses same-document hits. Access-count boost. Returns a `coverage` verdict (`full`/`partial`/`none`) so an agent can tell "not in this corpus" from "no good match" and stop instead of retrying. Each hit reports `age_days`; pass `stale_after_days` for a per-hit `stale` boolean. OKF documents also carry `concept_type`, `status`, and `trust` on each hit. |
 | `backlinks` | Every section that links *to* a target — precomputed at index time. `target_anchor` narrows to links aimed at one section (`[[Page#Heading]]`). |
 | `recent_hot` | Top-N sections by a time-decayed access score (two-week half-life) — recent use outranks stale heavy use. Persisted to `.lore/access.json`, so it survives restarts and reindexes. Returns raw `access_count` and `decayed_score`. |
 | `neighbors` | Parent, prev/next sibling, children of a node. Navigate one hop at a time. |
@@ -116,6 +116,24 @@ Lore handles Obsidian-flavoured markdown natively:
 - **Wiki-links** (`[[Page]]`, `[[Page|alias]]`, `[[folder/Page#Heading]]`) are extracted and indexed. Backlinks match by basename, so `[[arch]]` and `[[docs/arch.md#Caching]]` both find the same target. `#Heading` fragments are resolved to their heading at index time, so backlinks can be queried at section granularity.
 - **Dataview blocks** are tagged with `kind: "dataview"` on the owning heading so agents know they're query results, not prose.
 - **Code-fenced wiki-links** are excluded — `[[example]]` inside a code block doesn't create a spurious link.
+
+## Open Knowledge Format
+
+Lore is a native consumer of Google Cloud's [Open Knowledge Format
+(OKF)](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf) —
+a vendor-neutral spec (markdown + YAML frontmatter) for packaging knowledge for
+agents. OKF standardizes the *corpus*; Lore is the retrieval runtime the spec
+leaves open. Point Lore at any OKF bundle and it just works — with no vectors,
+the thing OKF's own consumption note assumes you'll reach for.
+
+When a document carries OKF frontmatter, Lore surfaces it on results:
+
+- **`type`** → `concept_type` on search hits, `list_documents`, `get_section`, and `corpus_map`.
+- **`status`** (`draft`/`stable`/`deprecated`) → `status`, same places.
+- **`verified`** → a derived `trust` tier (`human-reviewed` or `machine-confirmed`); absent when unverified.
+- **`stale_after`** → when the author's expiry date has passed, hits report `stale: true` *without* any `stale_after_days` request — an explicit expiry beats an mtime guess.
+
+See [docs/decisions/0005-okf-alignment.md](docs/decisions/0005-okf-alignment.md) for the full analysis.
 
 ## Local-first
 
