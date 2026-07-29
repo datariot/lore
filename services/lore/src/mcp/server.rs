@@ -110,6 +110,9 @@ impl LoreServer {
                 doc_id: i as u32,
                 title: doc.nodes.first().map(|n| n.title.clone()),
                 description: doc.description().map(str::to_string),
+                concept_type: doc.okf_type().map(str::to_string),
+                status: doc.okf_status().map(str::to_string),
+                trust: doc.trust_tier().map(|t| t.as_str().to_string()),
                 node_count: doc.nodes.len(),
                 age_days: doc.age_days(now),
                 frontmatter: if req.include_frontmatter {
@@ -257,14 +260,21 @@ impl LoreServer {
                     text: l.text.clone(),
                 })
                 .collect(),
+            concept_type: resolved.doc.okf_type().map(str::to_string),
+            status: resolved.doc.okf_status().map(str::to_string),
+            trust: resolved.doc.trust_tier().map(|t| t.as_str().to_string()),
             age_days: resolved.doc.age_days(crate::config::now_unix_secs()),
+            stale: resolved
+                .doc
+                .is_declared_stale(crate::config::now_unix_secs())
+                .then_some(true),
         }))
     }
 
     // ---- search -------------------------------------------------------------
 
     #[tool(
-        description = "BM25 keyword search over heading titles, path segments, and the per-section first-sentence summary. Returns ranked hits with a summary line each, plus a `coverage` verdict: `full` = every query term exists in this corpus, `partial` = some do (see `unmatched_terms`), `none` = the corpus does not contain your vocabulary — treat empty/weak results as authoritative and STOP rather than rephrasing and retrying. Tokens are lowercased; English stopwords and tokens shorter than two characters are skipped. Prefix a token with `-` to exclude any node containing it (e.g., `kafka -lambda`). No phrase or proximity operators. Set `group_by` to `\"doc\"` to collapse same-document hits into one primary plus up to `secondary_limit` (default 3) nested same-document sections — useful for narrow queries that concentrate in a single file. Each hit reports `age_days` (how old the source document is); older documents are likelier stale, so weigh recency and verify before asserting. Pass `stale_after_days` to get a `stale` boolean per hit instead of reasoning about the age yourself."
+        description = "BM25 keyword search over heading titles, path segments, and the per-section first-sentence summary. Returns ranked hits with a summary line each, plus a `coverage` verdict: `full` = every query term exists in this corpus, `partial` = some do (see `unmatched_terms`), `none` = the corpus does not contain your vocabulary — treat empty/weak results as authoritative and STOP rather than rephrasing and retrying. Tokens are lowercased; English stopwords and tokens shorter than two characters are skipped. Prefix a token with `-` to exclude any node containing it (e.g., `kafka -lambda`). No phrase or proximity operators. Set `group_by` to `\"doc\"` to collapse same-document hits into one primary plus up to `secondary_limit` (default 3) nested same-document sections — useful for narrow queries that concentrate in a single file. Each hit reports `age_days` (how old the source document is); older documents are likelier stale, so weigh recency and verify before asserting. Pass `stale_after_days` to get a `stale` boolean per hit instead of reasoning about the age yourself — and note that a hit whose author declared an OKF `stale_after` date that has already passed reports `stale: true` regardless. When a document carries Open Knowledge Format frontmatter, hits also carry `concept_type` (the OKF `type`), `status` (`draft`/`stable`/`deprecated`), and `trust` (`human-reviewed` or `machine-confirmed`); prefer a human-reviewed, stable, non-stale hit when several answer."
     )]
     async fn search(
         &self,
@@ -289,8 +299,15 @@ impl LoreServer {
                         heading_path: node.path.0.clone(),
                         summary: node.summary.clone(),
                         description: doc.description().map(str::to_string),
+                        concept_type: doc.okf_type().map(str::to_string),
+                        status: doc.okf_status().map(str::to_string),
+                        trust: doc.trust_tier().map(|t| t.as_str().to_string()),
                         age_days,
-                        stale: stale_flag(age_days, req.stale_after_days),
+                        stale: stale_flag(
+                            doc.is_declared_stale(now),
+                            age_days,
+                            req.stale_after_days,
+                        ),
                         score: h.score,
                         secondary_hits: Vec::new(),
                     })
@@ -325,8 +342,15 @@ impl LoreServer {
                             heading_path: primary_node.path.0.clone(),
                             summary: primary_node.summary.clone(),
                             description: doc.description().map(str::to_string),
+                            concept_type: doc.okf_type().map(str::to_string),
+                            status: doc.okf_status().map(str::to_string),
+                            trust: doc.trust_tier().map(|t| t.as_str().to_string()),
                             age_days,
-                            stale: stale_flag(age_days, req.stale_after_days),
+                            stale: stale_flag(
+                                doc.is_declared_stale(now),
+                                age_days,
+                                req.stale_after_days,
+                            ),
                             score: g.primary.score,
                             secondary_hits,
                         })
@@ -741,10 +765,20 @@ fn resolve_node<'a>(
     })
 }
 
-/// Resolve the optional `stale_after_days` threshold against a document's
-/// age into the `stale` field. `None` when the caller didn't ask; when they
-/// did but the age is unknown, the document can't be called stale (`false`).
-fn stale_flag(age_days: Option<u32>, threshold: Option<u32>) -> Option<bool> {
+/// Compute the `stale` field for a hit. Two independent triggers:
+///
+/// - `declared` — the author's OKF `stale_after` date has passed. This is
+///   authoritative and fires even when the caller passed no threshold: an
+///   explicit expiry beats an mtime guess.
+/// - `stale_after_days` — the caller asked for a mtime-age cutoff and the
+///   document is older than it.
+///
+/// Returns `None` only when neither signal is in play (no declared expiry and
+/// no requested threshold), so the field stays absent for the common case.
+fn stale_flag(declared: bool, age_days: Option<u32>, threshold: Option<u32>) -> Option<bool> {
+    if declared {
+        return Some(true);
+    }
     threshold.map(|t| age_days.is_some_and(|a| a > t))
 }
 

@@ -94,4 +94,30 @@ impl DocumentIndex {
             .map(str::trim)
             .filter(|s| !s.is_empty())
     }
+
+    /// The OKF `type` — the concept kind, when this document carries Open
+    /// Knowledge Format frontmatter. `None` for ordinary notes. See `okf`.
+    pub fn okf_type(&self) -> Option<&str> {
+        crate::okf::concept_type(self.frontmatter.as_ref())
+    }
+
+    /// The OKF `status` (`draft` | `stable` | `deprecated` by convention).
+    pub fn okf_status(&self) -> Option<&str> {
+        crate::okf::status(self.frontmatter.as_ref())
+    }
+
+    /// Whether the author declared this document stale as of `now_unix` via an
+    /// OKF `stale_after` date. A stronger freshness signal than [`age_days`]:
+    /// the author named an expiry, we didn't infer one from mtime.
+    ///
+    /// [`age_days`]: DocumentIndex::age_days
+    pub fn is_declared_stale(&self, now_unix: u64) -> bool {
+        crate::okf::is_declared_stale(self.frontmatter.as_ref(), now_unix)
+    }
+
+    /// Trust tier from the OKF `verified` family, when present. `None` when the
+    /// document is unverified (the common case).
+    pub fn trust_tier(&self) -> Option<crate::okf::TrustTier> {
+        crate::okf::trust_tier(self.frontmatter.as_ref())
+    }
 }

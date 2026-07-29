@@ -120,6 +120,12 @@ pub struct CorpusMapDoc {
     /// Author-written frontmatter `description`, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// OKF `type` (concept kind), when the document carries OKF frontmatter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concept_type: Option<String>,
+    /// OKF `status` (`draft` | `stable` | `deprecated`), when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
     /// Age of the document in whole days at query time. `None` if mtime unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub age_days: Option<u32>,
@@ -238,6 +244,8 @@ pub(crate) fn build_corpus_map(
             doc_id: i as u32,
             title: doc.nodes.first().map(|n| n.title.clone()),
             description: doc.description().map(str::to_string),
+            concept_type: doc.okf_type().map(str::to_string),
+            status: doc.okf_status().map(str::to_string),
             age_days: doc.age_days(now_unix),
             headings: doc_headings(doc, max_depth),
         };
@@ -276,10 +284,23 @@ pub struct SectionResponse {
     pub byte_range: [u32; 2],
     pub content: String,
     pub outbound_links: Vec<LinkInfo>,
+    /// OKF `type` — the concept kind — when the document carries Open Knowledge
+    /// Format frontmatter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concept_type: Option<String>,
+    /// OKF `status` (`draft` | `stable` | `deprecated`), when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// OKF trust tier (`human-reviewed` | `machine-confirmed`), when verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust: Option<String>,
     /// Age of the source document in whole days at fetch time. `None` if the
     /// filesystem didn't report an mtime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub age_days: Option<u32>,
+    /// `true` when the author's OKF `stale_after` date has passed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -351,12 +372,26 @@ pub struct SearchHit {
     /// A curated retrieval hook — read this before the body-derived `summary`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// OKF `type` — the concept kind — when the document carries Open Knowledge
+    /// Format frontmatter. Absent for ordinary notes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concept_type: Option<String>,
+    /// OKF `status` (`draft` | `stable` | `deprecated`), when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// OKF trust tier from the `verified` family: `human-reviewed` or
+    /// `machine-confirmed`. Absent when the document is unverified. Prefer a
+    /// human-reviewed hit over a machine-confirmed one when both answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust: Option<String>,
     /// Age of the source document in whole days at query time. Older hits are
     /// more likely stale — verify before asserting. `None` if mtime unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub age_days: Option<u32>,
-    /// Set only when the request passes `stale_after_days`: `true` when this
-    /// document is older than that threshold.
+    /// `true` when this hit should be treated as stale. Set when the author's
+    /// OKF `stale_after` date has passed (authoritative, independent of any
+    /// request), or when `stale_after_days` was passed and the document is
+    /// older than that threshold.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale: Option<bool>,
     pub score: f32,
@@ -612,6 +647,15 @@ pub struct DocumentSummary {
     /// one-line hook for the document.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// OKF `type` (concept kind), when the document carries OKF frontmatter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concept_type: Option<String>,
+    /// OKF `status` (`draft` | `stable` | `deprecated`), when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// OKF trust tier (`human-reviewed` | `machine-confirmed`), when verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust: Option<String>,
     pub node_count: usize,
     /// Age of the document in whole days. `None` if mtime unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -725,7 +769,6 @@ pub(crate) fn to_heading_path(segments: &[String]) -> HeadingPath {
 /// `(DocId, NodeId)` resolved from a request that may pass either node_id or
 /// heading_path.
 pub(crate) struct ResolvedNode<'a> {
-    #[allow(dead_code)]
     pub doc: &'a lore_index::DocumentIndex,
     pub node: &'a lore_index::HeadingNode,
     #[allow(dead_code)]

@@ -906,3 +906,141 @@ async fn mcp_server_end_to_end() {
 
     server.abort();
 }
+
+/// OKF-aware ingestion (decision 0005): when a document carries Open Knowledge
+/// Format frontmatter, its `type`, `status`, trust tier, and author-declared
+/// staleness surface on search, list_documents, and get_section.
+#[tokio::test]
+async fn okf_frontmatter_surfaces_on_results() {
+    let dir = tempdir().unwrap();
+    // A single OKF concept document. `stale_after` is deliberately in the past
+    // so the declared-stale signal fires deterministically regardless of the
+    // file's mtime; a `human:` verifier makes the trust tier human-reviewed.
+    let okf = "\
+---
+type: BigQuery Table
+title: Orders
+description: One row per completed customer order.
+status: stable
+stale_after: 2020-01-01
+verified:
+  - by: process:finance-nightly
+    at: 2026-05-01T00:00:00Z
+  - by: human:dave
+    at: 2026-05-02T00:00:00Z
+---
+# Orders
+
+Revenue-bearing order records, one row per completed order.
+";
+    fs::write(dir.path().join("orders.md"), okf).unwrap();
+    index_command(IndexOptions::new(dir.path())).unwrap();
+
+    let registry = CorpusRegistry::new();
+    registry.load_from_root(dir.path()).unwrap();
+
+    let addr = free_port().await;
+    let opts = ServeOptions {
+        bind: addr,
+        path: "/mcp".to_string(),
+    };
+    let server = tokio::spawn(async move {
+        serve_http(registry, opts).await.ok();
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let url = format!("http://{addr}/mcp");
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let session: Option<String> = None;
+
+    let (_init, session) = rpc(
+        &client,
+        &url,
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "lore-test", "version": "0.0.0"}
+        }),
+        &session,
+    )
+    .await;
+    let body = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+    client
+        .post(&url)
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "application/json, text/event-stream")
+        .header("mcp-session-id", session.as_deref().unwrap())
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+
+    let source_id = dir.path().file_name().unwrap().to_str().unwrap();
+
+    // Assert the OKF projection on a JSON value that represents one document.
+    let assert_okf = |v: &Value, ctx: &str| {
+        assert_eq!(v["concept_type"], "BigQuery Table", "concept_type on {ctx}");
+        assert_eq!(v["status"], "stable", "status on {ctx}");
+        assert_eq!(v["trust"], "human-reviewed", "trust on {ctx}");
+        assert_eq!(v["stale"], true, "declared stale_after fires on {ctx}");
+    };
+
+    // search — no stale_after_days passed, yet `stale` is true from the
+    // author's expired `stale_after` date.
+    let (search_resp, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "search",
+            "arguments": {"source_id": source_id, "query": "orders revenue"}
+        }),
+        &session,
+    )
+    .await;
+    let hits = search_resp["result"]["structuredContent"]["hits"]
+        .as_array()
+        .unwrap();
+    assert!(!hits.is_empty(), "orders concept must be findable");
+    assert_okf(&hits[0], "search hit");
+
+    // list_documents
+    let (list_resp, session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "list_documents",
+            "arguments": {"source_id": source_id}
+        }),
+        &session,
+    )
+    .await;
+    let docs = list_resp["result"]["structuredContent"]["documents"]
+        .as_array()
+        .unwrap();
+    let orders = docs
+        .iter()
+        .find(|d| d["rel_path"] == "orders.md")
+        .expect("orders.md listed");
+    assert_eq!(orders["concept_type"], "BigQuery Table");
+    assert_eq!(orders["status"], "stable");
+    assert_eq!(orders["trust"], "human-reviewed");
+
+    // get_section
+    let (sec_resp, _session) = rpc(
+        &client,
+        &url,
+        "tools/call",
+        json!({
+            "name": "get_section",
+            "arguments": {"source_id": source_id, "rel_path": "orders.md", "heading_path": ["Orders"]}
+        }),
+        &session,
+    )
+    .await;
+    assert_okf(&sec_resp["result"]["structuredContent"], "get_section");
+
+    server.abort();
+}

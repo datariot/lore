@@ -11,6 +11,7 @@ mod builder;
 mod corpus;
 mod hotstore;
 mod model;
+pub mod okf;
 mod query;
 mod serialize;
 
@@ -19,5 +20,6 @@ pub use builder::build_document;
 pub use corpus::{CorpusIndex, DocId, Field, FieldLengths, Posting, canonical_link_keys, tokenize};
 pub use hotstore::{AccessRecord, AccessStore, DEFAULT_HALF_LIFE_SECS};
 pub use model::{DocumentIndex, HeadingNode};
+pub use okf::TrustTier;
 pub use query::{NodeRef, Traversal};
 pub use serialize::{load_index, write_index};
