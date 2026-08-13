@@ -1,0 +1,21 @@
+// Vault query set — CORRECTED against real content 2026-08-12 (was knowledge-base.candidate.jsonl).
+//
+// Ground truth chosen by inspecting the vault directly (which doc actually
+// answers the query), NOT by trusting search's ranking — so Success@k/MRR
+// measure how close search lands to the intended doc. Coverage: full = every
+// query term appears somewhere in the corpus, partial = some, none = out-of-domain.
+//
+// This set is a real-world baseline, NOT expected to hit 1.0 (unlike the
+// CI-gated eval/mini-kb.jsonl fixture). Run:
+//   lore eval -r ~/Workspace/knowledge-base -q eval/knowledge-base.jsonl
+// Track the numbers across retrieval changes; when one legitimately moves, note it.
+
+{"query": "kafka connect alerts", "relevant": ["Entities/Projects/Security Logging Pipeline/Reference/Alert-Fixes/12-complete-alert-coverage.md", "Entities/Projects/Security Logging Pipeline/Reference/Alert-Fixes/README.md"], "expected_coverage": "full", "note": "authoritative alert-coverage doc + Alert-Fixes index"}
+{"query": "msk iam authentication", "relevant": ["Entities/Projects/Security Logging Pipeline/Documentation/adr/003-msk-iam-authentication.md"], "expected_coverage": "full", "note": "exact ADR"}
+{"query": "bazel buildkite ci", "relevant": ["Entities/Projects/Security Logging Pipeline/Reference/Great-Lakes/bazel-buildkite-review/README.md"], "expected_coverage": "full", "note": "the bazel/buildkite review doc"}
+{"query": "vpc flow log reduction", "relevant": ["Entities/Projects/Security Logging Pipeline/Reference/vpcflow_task_reduction_analysis.md"], "expected_coverage": "full", "note": "CORRECTED from calendar notes to the real analysis doc (the flagged ranking miss)"}
+{"query": "consumer group lag optimization", "relevant": ["Entities/Projects/Security Logging Pipeline/Reference/kafka_connect_tasks_max_best_practices.md", "Entities/Projects/Security Logging Pipeline/Reference/Observability/01-msk-observability.md"], "expected_coverage": "full", "note": "tasks.max tuning = the lag lever; observability doc = lag metrics"}
+{"query": "otel collector arm64 fix", "relevant": ["Entities/Projects/Security Logging Pipeline/Reference/Observability/13-otel-collector-arm64-fix.md"], "expected_coverage": "full", "note": "REPLACED 'grove sink connector' — Grove is retired from the pipelines; a measurement baseline should track current, representative topics"}
+{"query": "fargate over ec2", "relevant": ["Entities/Projects/Security Logging Pipeline/Documentation/adr/005-fargate-over-ec2.md"], "expected_coverage": "full", "note": "REPLACED unanswerable 'lore structure-aware retrieval' (no lore doc in vault) with a real exact-ADR target"}
+{"query": "obsidian faceted entity graph", "relevant": ["Meta/Reference/Knowledge-Base-Guide.md", "Entities/Projects/Knowledge Base/README.md"], "expected_coverage": "full", "note": "CORRECTED to the definitive KB model guide (+ project note)"}
+{"query": "quokka photosynthesis marsupial", "relevant": [], "expected_coverage": "none", "note": "out-of-domain probe, genuinely-absent vocabulary; verifies coverage=none"}
