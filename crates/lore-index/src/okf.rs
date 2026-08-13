@@ -37,15 +37,19 @@ impl TrustTier {
     }
 }
 
-/// The OKF `type` — a free-form concept-kind string. Only a non-empty top-level
-/// string counts; a list or map value is ignored.
+/// The frontmatter `type` — a free-form concept-kind string. OKF names this
+/// field `type`, but so do many Obsidian vaults with their own vocabulary; we
+/// can't tell them apart and deliberately surface whatever the author wrote
+/// (e.g. `roadmap`, `moc`, `daily`). Only a non-empty top-level string counts;
+/// a list or map value is ignored.
 pub fn concept_type(fm: Option<&Value>) -> Option<&str> {
     string_field(fm, "type")
 }
 
-/// The OKF `status` — one of `draft` | `stable` | `deprecated` by convention,
-/// but we return whatever string the author wrote (consumers tolerate unknown
-/// values).
+/// The frontmatter `status` — OKF's convention is `draft` | `stable` |
+/// `deprecated`, but a vault may use any lifecycle vocabulary (`active`,
+/// `archived`, …); we return whatever string the author wrote. Consumers treat
+/// it as an opaque cue, not an enum.
 pub fn status(fm: Option<&Value>) -> Option<&str> {
     string_field(fm, "status")
 }
