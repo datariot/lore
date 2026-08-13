@@ -120,10 +120,14 @@ pub struct CorpusMapDoc {
     /// Author-written frontmatter `description`, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// OKF `type` (concept kind), when the document carries OKF frontmatter.
+    /// The author's frontmatter `type` — the concept kind, verbatim (any value;
+    /// OKF's concept `type` is one such convention). Absent when the document
+    /// declares no `type`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concept_type: Option<String>,
-    /// OKF `status` (`draft` | `stable` | `deprecated`), when declared.
+    /// The author's frontmatter `status`, verbatim — any value the author uses
+    /// (OKF's `draft`/`stable`/`deprecated` is one such convention). Absent when
+    /// the document declares no `status`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// Age of the document in whole days at query time. `None` if mtime unknown.
@@ -284,11 +288,13 @@ pub struct SectionResponse {
     pub byte_range: [u32; 2],
     pub content: String,
     pub outbound_links: Vec<LinkInfo>,
-    /// OKF `type` — the concept kind — when the document carries Open Knowledge
-    /// Format frontmatter.
+    /// The author's frontmatter `type` — the concept kind, verbatim (any value;
+    /// OKF's concept `type` is one such convention).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concept_type: Option<String>,
-    /// OKF `status` (`draft` | `stable` | `deprecated`), when declared.
+    /// The author's frontmatter `status`, verbatim — any value the author uses
+    /// (OKF's `draft`/`stable`/`deprecated` is one such convention). Absent when
+    /// the document declares no `status`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// OKF trust tier (`human-reviewed` | `machine-confirmed`), when verified.
@@ -372,11 +378,14 @@ pub struct SearchHit {
     /// A curated retrieval hook — read this before the body-derived `summary`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// OKF `type` — the concept kind — when the document carries Open Knowledge
-    /// Format frontmatter. Absent for ordinary notes.
+    /// The author's frontmatter `type` — the concept kind, verbatim (any value;
+    /// OKF's concept `type` is one such convention). Absent for notes that
+    /// declare no `type`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concept_type: Option<String>,
-    /// OKF `status` (`draft` | `stable` | `deprecated`), when declared.
+    /// The author's frontmatter `status`, verbatim — any value the author uses
+    /// (OKF's `draft`/`stable`/`deprecated` is one such convention). Absent when
+    /// the document declares no `status`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// OKF trust tier from the `verified` family: `human-reviewed` or
@@ -647,10 +656,14 @@ pub struct DocumentSummary {
     /// one-line hook for the document.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// OKF `type` (concept kind), when the document carries OKF frontmatter.
+    /// The author's frontmatter `type` — the concept kind, verbatim (any value;
+    /// OKF's concept `type` is one such convention). Absent when the document
+    /// declares no `type`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concept_type: Option<String>,
-    /// OKF `status` (`draft` | `stable` | `deprecated`), when declared.
+    /// The author's frontmatter `status`, verbatim — any value the author uses
+    /// (OKF's `draft`/`stable`/`deprecated` is one such convention). Absent when
+    /// the document declares no `status`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// OKF trust tier (`human-reviewed` | `machine-confirmed`), when verified.
