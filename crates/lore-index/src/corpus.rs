@@ -385,12 +385,19 @@ fn add_postings(
 /// Tokenize text the same way the ranker does. Kept here so the inverted
 /// index and ranker can't drift from each other without a compile error.
 ///
-/// Pipeline: Unicode word segmentation → strip non-alphanumeric → lowercase
-/// → drop tokens shorter than 2 chars → drop English stopwords → Porter
-/// stem (English). The stemmer collapses surface variants like
-/// `alarm/alarms/alarming` and `deploy/deployed/deployment` to the same
-/// inverted-index key. Stemming runs *after* stopword filtering so the
-/// stoplist matches the original surface form (the form a user types).
+/// Pipeline: Unicode word segmentation → strip non-alphanumeric →
+/// decompound on case boundaries → lowercase → drop tokens shorter than 2
+/// chars → drop English stopwords → Porter stem (English). The stemmer
+/// collapses surface variants like `alarm/alarms/alarming` and
+/// `deploy/deployed/deployment` to the same inverted-index key. Stemming
+/// runs *after* stopword filtering so the stoplist matches the original
+/// surface form (the form a user types).
+///
+/// Decompounding (KB-802) splits `VPCFlow` into `vpc`/`flow` (plus the whole
+/// `vpcflow`) so a natural, space-separated query reaches a document that
+/// only ever wrote the concatenated compound. Because both the index build
+/// and every query path run through this one function, the split is
+/// symmetric — the doc and the query land on the same keys by construction.
 pub fn tokenize(text: &str) -> Vec<String> {
     use rust_stemmers::{Algorithm, Stemmer};
     use unicode_segmentation::UnicodeSegmentation;
@@ -398,20 +405,64 @@ pub fn tokenize(text: &str) -> Vec<String> {
     let stemmer = Stemmer::create(Algorithm::English);
     let mut out = Vec::new();
     for word in UnicodeSegmentation::unicode_words(text) {
+        // Strip non-alphanumeric but keep case — decompound() needs the case
+        // boundaries; lowercasing happens per emitted piece below.
         let cleaned: String = word
             .chars()
             .filter(|c: &char| c.is_alphanumeric())
-            .flat_map(char::to_lowercase)
             .collect();
-        if cleaned.len() < 2 {
-            continue;
+        for piece in decompound(&cleaned) {
+            let lowered: String = piece.chars().flat_map(char::to_lowercase).collect();
+            if lowered.len() < 2 {
+                continue;
+            }
+            if STOPWORDS.contains(&lowered.as_str()) {
+                continue;
+            }
+            out.push(stemmer.stem(&lowered).into_owned());
         }
-        if STOPWORDS.contains(&cleaned.as_str()) {
-            continue;
-        }
-        out.push(stemmer.stem(&cleaned).into_owned());
     }
     out
+}
+
+/// Split an identifier on case boundaries into its component words.
+///
+/// A boundary is inserted (a) between a lowercase/digit and an uppercase
+/// letter — camelCase (`taskMax` → `task`, `Max`) and PascalCase
+/// (`SomeThing` → `Some`, `Thing`) — and (b) at the acronym/word seam, an
+/// uppercase letter directly before an uppercase-then-lowercase run
+/// (`VPCFlow` → `VPC`, `Flow`; `HTTPServer` → `HTTP`, `Server`). All-lower
+/// or all-upper compounds (`vpcflow`, `README`) have no case seam and come
+/// back whole — case-boundary splitting deliberately can't reach those.
+///
+/// When there is more than one part the original compound is appended too,
+/// so both a spaced `vpc flow` query and a literal `VPCFlow` query reach a
+/// document that wrote only `VPCFlow`. Case is preserved; the caller
+/// lowercases and stems each returned piece.
+fn decompound(word: &str) -> Vec<String> {
+    let chars: Vec<char> = word.chars().collect();
+    if chars.len() < 2 {
+        return vec![word.to_string()];
+    }
+    let mut parts = Vec::new();
+    let mut start = 0;
+    for i in 1..chars.len() {
+        let prev = chars[i - 1];
+        let cur = chars[i];
+        let lower_to_upper = (prev.is_lowercase() || prev.is_numeric()) && cur.is_uppercase();
+        let acronym_seam = prev.is_uppercase()
+            && cur.is_uppercase()
+            && chars.get(i + 1).is_some_and(|n| n.is_lowercase());
+        if lower_to_upper || acronym_seam {
+            parts.push(chars[start..i].iter().collect::<String>());
+            start = i;
+        }
+    }
+    parts.push(chars[start..].iter().collect::<String>());
+    if parts.len() > 1 {
+        parts.push(word.to_string());
+    }
+    parts
 }
 
 const STOPWORDS: &[&str] = &[
@@ -545,6 +596,46 @@ mod tests {
         assert!(tokenize("the").is_empty());
         assert!(tokenize("a").is_empty()); // also under the 2-char min.
         assert_eq!(tokenize("k"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn decompound_splits_camel_pascal_and_acronym_seams() {
+        // camelCase, PascalCase, and the acronym→word seam all split; the
+        // whole compound is appended so a literal-compound query still lands.
+        assert_eq!(decompound("taskMax"), vec!["task", "Max", "taskMax"]);
+        assert_eq!(decompound("SomeThing"), vec!["Some", "Thing", "SomeThing"]);
+        assert_eq!(decompound("VPCFlow"), vec!["VPC", "Flow", "VPCFlow"]);
+        assert_eq!(
+            decompound("HTTPServer"),
+            vec!["HTTP", "Server", "HTTPServer"]
+        );
+    }
+
+    #[test]
+    fn decompound_leaves_uniform_case_and_digits_whole() {
+        // No case seam → returned whole (single-element, no compound copy).
+        assert_eq!(decompound("vpcflow"), vec!["vpcflow"]);
+        assert_eq!(decompound("README"), vec!["README"]);
+        assert_eq!(decompound("kafka"), vec!["kafka"]);
+        // Digit boundaries are deliberately out of scope — `arm64` stays one
+        // token rather than splitting into `arm`/`64`.
+        assert_eq!(decompound("arm64"), vec!["arm64"]);
+    }
+
+    #[test]
+    fn tokenize_reaches_compound_via_spaced_query() {
+        // The KB-802 case: a doc that writes only the PascalCase compound
+        // `VPCFlow` must be reachable by the spaced query `vpc flow`. Both
+        // sides run through tokenize(), so the split is symmetric — the
+        // compound's parts appear in the doc's token set, and the spaced
+        // query's tokens are a subset of them.
+        let doc_tokens = tokenize("VPCFlow Task Reduction Analysis");
+        for term in tokenize("vpc flow") {
+            assert!(
+                doc_tokens.contains(&term),
+                "spaced-query term {term:?} missing from doc tokens {doc_tokens:?}"
+            );
+        }
     }
 
     #[test]

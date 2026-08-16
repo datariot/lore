@@ -5,7 +5,7 @@
 // Schema: {"query", "relevant": [rel_path | rel_path#Heading > Sub], "expected_coverage"?, "note"?}
 
 {"query": "purpose of the fixture", "relevant": ["docs/intro.md#Introduction > Purpose"], "expected_coverage": "full", "note": "section-level target"}
-{"query": "components parser indexer server", "relevant": ["docs/architecture.md#Architecture > Components"], "expected_coverage": "partial", "note": "Components heading ranks #1, but parser/indexer/server live in body bullets that aren't in the indexed summary field -> partial coverage. Harness caught this mislabel."}
+{"query": "components parser indexer server", "relevant": ["docs/architecture.md#Architecture > Components"], "expected_coverage": "full", "note": "KB-802 regression guard: the Components summary flattens its bullets to the compound `ParserIndexerServer`; case-boundary decompounding splits it so parser/indexer/server are all reachable -> full. Was `partial` before decompounding (the compound was one unmatchable token)."}
 {"query": "data flow", "relevant": ["docs/architecture.md#Architecture > Data Flow"], "expected_coverage": "full"}
 {"query": "scope frontmatter wiki-links", "relevant": ["docs/intro.md#Introduction > Scope"], "expected_coverage": "full"}
 {"query": "architecture", "relevant": ["docs/architecture.md"], "expected_coverage": "full", "note": "doc-level target: any section counts"}
