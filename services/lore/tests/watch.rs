@@ -49,6 +49,54 @@ async fn wait_for_doc_count(
     false
 }
 
+/// Every `rel_path` the corpus currently reports.
+async fn doc_paths(
+    client: &reqwest::Client,
+    url: &str,
+    source_id: &str,
+    session: &Option<String>,
+) -> Vec<String> {
+    let (toc, _s) = rpc(
+        client,
+        url,
+        "tools/call",
+        json!({"name": "table_of_contents", "arguments": {"source_id": source_id}}),
+        session,
+    )
+    .await;
+    toc["result"]["structuredContent"]["documents"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .map(|d| d["rel_path"].as_str().unwrap_or_default().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Poll until `pred` holds over the corpus's `rel_path` set, then return that
+/// set. Returns the last observation on timeout so the caller can report what
+/// it actually saw rather than just "didn't happen".
+async fn wait_for_paths(
+    client: &reqwest::Client,
+    url: &str,
+    source_id: &str,
+    session: &Option<String>,
+    pred: impl Fn(&[String]) -> bool,
+    timeout: Duration,
+) -> Result<Vec<String>, Vec<String>> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut last = Vec::new();
+    while std::time::Instant::now() < deadline {
+        last = doc_paths(client, url, source_id, session).await;
+        if pred(&last) {
+            return Ok(last);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(last)
+}
+
 /// Collect every heading title in a nested `roots[].children[]` TOC.
 fn collect_titles(entries: &[Value], out: &mut Vec<String>) {
     for e in entries {
@@ -107,6 +155,9 @@ async fn watch_triggers_incremental_reindex() {
     let dir = tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     fs::write(root.join("initial.md"), "# Initial\n\nhello\n").unwrap();
+    // Seeded before indexing so the ignore rules are in force from the start;
+    // step 8 writes files under them and expects the watcher to skip both.
+    fs::write(root.join(".gitignore"), "secret.md\n").unwrap();
     index_command(IndexOptions::new(&root)).unwrap();
 
     // 2) Start server + watcher.
@@ -296,7 +347,56 @@ async fn watch_triggers_incremental_reindex() {
     }
     assert!(updated, "modified document did not re-index within 5s");
 
-    // 8) Delete a file and verify it vanishes.
+    // 8) The watcher must apply the same rules the indexer did. Write two
+    // files it should skip — one under a hidden directory (the `git worktree
+    // add` shape that doubled a vault), one matching .gitignore — plus a
+    // canary it *should* pick up. Waiting on the canary is what makes the
+    // negative assertion meaningful: once the canary has landed, the watcher
+    // has demonstrably drained past the excluded writes, so their absence is
+    // a decision rather than a race.
+    fs::create_dir_all(root.join(".claude/worktrees/wt")).unwrap();
+    fs::write(root.join(".claude/worktrees/wt/dup.md"), "# Dup\n").unwrap();
+    fs::write(root.join("secret.md"), "# Secret\n").unwrap();
+    fs::write(root.join("canary.md"), "# Canary\n").unwrap();
+
+    // Wait on the canary *by path*, not by document count: if the watcher is
+    // wrongly admitting the excluded files the count overshoots, and a
+    // count-based wait would fail with a misleading "canary never arrived".
+    let paths = wait_for_paths(
+        &client,
+        &url,
+        &source_id,
+        &session,
+        |p| p.iter().any(|x| x == "canary.md"),
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap_or_else(|last| {
+        panic!("canary never arrived — cannot judge the excluded files. saw: {last:?}")
+    });
+
+    assert!(
+        !paths.iter().any(|p| p.contains("worktrees")),
+        "watcher indexed a file under a hidden directory: {paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|p| p == "secret.md"),
+        "watcher indexed a gitignored file: {paths:?}"
+    );
+
+    fs::remove_file(root.join("canary.md")).unwrap();
+    wait_for_paths(
+        &client,
+        &url,
+        &source_id,
+        &session,
+        |p| !p.iter().any(|x| x == "canary.md"),
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap_or_else(|last| panic!("canary did not drop from the corpus. saw: {last:?}"));
+
+    // 9) Delete a file and verify it vanishes.
     fs::remove_file(root.join("second.md")).unwrap();
     let mut removed = false;
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
