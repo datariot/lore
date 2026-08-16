@@ -42,6 +42,13 @@ launchctl kickstart -k gui/$(id -u)/io.datariot.lore   # restart after a rebuild
 Additional corpora are additional `-r` flags. Each root must be indexed
 once with `lore index` before it can be served.
 
+A watched root may safely be a repository root. Both the initial walk and
+the watcher skip hidden directories, `.gitignore`d paths, and `.lore/`, so
+build output and `.claude/worktrees/` never enter the corpus. Editing a
+`.gitignore` while the watcher runs re-arms it for *future* events; documents
+already in the index are only re-evaluated by rebuilding the source
+(`add_source` with `rebuild: true`, or `lore index` + restart).
+
 ## Register with Claude Code
 
 ```bash
