@@ -3,3 +3,9 @@ Cargo.lock
 .lore/
 *.swp
 .DS_Store
+
+# Claude Code scratch. Deliberately not a blanket `.claude/` — checked-in
+# agents, skills, and commands belong in the repo; only worktrees (build
+# output) and per-machine settings do not.
+.claude/worktrees/
+.claude/settings.local.json
