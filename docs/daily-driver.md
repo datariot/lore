@@ -66,6 +66,20 @@ claude mcp list        # lore: ... - ✔ Connected
   `search` for it. Observed latency from write to searchable: ~2 s
   (250 ms debounce + full derived-index rebuild over 15,927 nodes).
 - **Logs**: `tail -f ~/Library/Logs/lore.log`.
+- **After a rebuild, verify the binary by content, not by exit code.**
+  `cargo install --path services/lore` reuses cached release artifacts and
+  can report success in under two seconds — indistinguishable from having
+  installed nothing. Grep the installed binary for a string only the new
+  code emits:
+
+  ```bash
+  strings ~/.cargo/bin/lore | grep "some new log message"
+  ```
+
+  Then confirm the restart took, with a **canary**: write a file that
+  *should* index and check it appears. Asserting only that something
+  unwanted is absent proves nothing — a watcher that died on startup
+  passes that test perfectly.
 
 ## Gotchas
 
