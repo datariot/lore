@@ -86,6 +86,22 @@ The MCP tools live in `services/lore/src/mcp/server.rs`, all routed by `#[tool_r
 
 Naming rules for wire fields: the heading-segment list is always `heading_path` — in requests *and* responses; `rel_path` is always the file path. Never introduce a bare `path` field. `table_of_contents` returns the tree nested (`roots[].children[]`), not a flat list.
 
+**Accept the shapes callers send.** A month of Claude Code transcripts held
+thirteen failed lore calls; eleven were `failed to deserialize parameters`,
+and they were the same few guesses made independently by different sessions —
+which makes them the surface's problem, not the caller's. So: `source_id` is
+*optional* on the read tools (with one corpus loaded it is that one; `search`
+spans every corpus otherwise and stamps each hit with its `source_id`; a
+`rel_path` that lives in exactly one corpus chooses it; real ambiguity is
+refused with the list of ids). `get_section` takes a document as `rel_path`
+*or* as the `doc_id` a search hit carries, and with no section named returns
+the whole document. `get_by_path` accepts its path as `rel_path` too, and
+`add_source` accepts `root_dir`. Aliases are `#[serde(alias)]`, so the schema
+keeps one canonical name. A bare `path` stays refused. The exact failing
+payloads are pinned in `mcp/tools.rs::caller_shapes` and driven over the wire
+in `tests/caller_shapes.rs` — when a new refused shape shows up in traces, add
+it there first.
+
 When adding a tool:
 
 1. Define `FooRequest` / `FooResponse` in `mcp/tools.rs` with `#[derive(Serialize, Deserialize, JsonSchema)]`.

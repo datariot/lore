@@ -17,12 +17,12 @@ use crate::config::index_path;
 use crate::mcp::registry::CorpusRegistry;
 use crate::mcp::tools::{
     AddSourceRequest, AddSourceResponse, Backlink, BacklinksRequest, BacklinksResponse,
-    CorpusMapRequest, CorpusMapResponse, DocumentSummary, GetByPathRequest, GetSectionRequest,
-    GroupBy, HotNode, HotRequest, HotResponse, LinkInfo, ListDocumentsRequest,
+    CorpusMapRequest, CorpusMapResponse, CoverageLevel, DocumentSummary, GetByPathRequest,
+    GetSectionRequest, GroupBy, HotNode, HotRequest, HotResponse, LinkInfo, ListDocumentsRequest,
     ListDocumentsResponse, ListSourcesResponse, NeighborRef, NeighborsRequest, NeighborsResponse,
-    ResolvedNode, SearchHit, SearchRequest, SearchResponse, SectionHit, SectionResponse,
-    SourceSummary, TocDocument, TocRequest, TocResponse, build_corpus_map, frontmatter_matches,
-    to_heading_path, toc_tree,
+    ResolvedNode, SearchCoverage, SearchHit, SearchRequest, SearchResponse, SectionHit,
+    SectionResponse, SourceSummary, TocDocument, TocRequest, TocResponse, build_corpus_map,
+    frontmatter_matches, to_heading_path, toc_tree,
 };
 
 #[derive(Clone)]
@@ -49,6 +49,55 @@ impl LoreServer {
         self.registry
             .get(&SourceId::new(source_id))
             .ok_or_else(|| source_not_found(source_id))
+    }
+
+    /// The corpus a read should go to when the caller did not say.
+    ///
+    /// `source_id` was a required field on every read tool, and omitting it
+    /// was the single most common way a call failed in practice (four of
+    /// thirteen failures in a month of transcripts). With one corpus loaded
+    /// there is nothing to choose; with several, a `rel_path` that lives in
+    /// exactly one of them chooses it. Anything else is a real ambiguity and
+    /// is refused with the list of ids, so the caller's next call can name
+    /// one rather than guess.
+    fn resolve_source(
+        &self,
+        source_id: Option<&str>,
+        rel_path: Option<&str>,
+    ) -> Result<crate::mcp::registry::CorpusHandle, McpError> {
+        if let Some(id) = source_id {
+            return self.corpus_handle(id);
+        }
+        let ids = self.registry.ids();
+        let mut handles: Vec<_> = ids.iter().filter_map(|id| self.registry.get(id)).collect();
+        match handles.len() {
+            0 => Err(mcp_invalid(
+                "no corpus is loaded; call `add_source` first".to_string(),
+            )),
+            1 => Ok(handles.remove(0)),
+            _ => {
+                if let Some(rel) = rel_path {
+                    let holding: Vec<_> = handles
+                        .into_iter()
+                        .filter(|h| h.read().documents.iter().any(|d| d.rel_path == rel))
+                        .collect();
+                    match holding.len() {
+                        1 => return Ok(holding.into_iter().next().expect("one handle")),
+                        0 => {
+                            return Err(mcp_not_found(format!(
+                                "no document `{rel}` in any loaded corpus"
+                            )));
+                        }
+                        _ => {}
+                    }
+                }
+                let names: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+                Err(mcp_invalid(format!(
+                    "several corpora are loaded; pass `source_id` (one of: {})",
+                    names.join(", ")
+                )))
+            }
+        }
     }
 
     // ---- list_sources -------------------------------------------------------
@@ -204,27 +253,65 @@ impl LoreServer {
     // ---- get_section --------------------------------------------------------
 
     #[tool(
-        description = "Retrieve the content of a section by heading path or node id. Uses a cached memory map of the source file so reads are O(1) byte-range slices — no markdown reparsing."
+        description = "Retrieve a section, or a whole document, from a corpus. Name the document by `rel_path` or by the `doc_id` a search hit carries, and the section by `heading_path` or `node_id`; omit both section fields to get the whole document. `source_id` is optional when only one corpus is loaded, or when the `rel_path` lives in exactly one of them. Reads are O(1) byte-range slices of a cached memory map — no markdown reparsing."
     )]
     async fn get_section(
         &self,
         Parameters(req): Parameters<GetSectionRequest>,
     ) -> Result<Json<SectionResponse>, McpError> {
-        let source = SourceId::new(&req.source_id);
-        let handle = self.corpus_handle(&req.source_id)?;
+        let handle = self.resolve_source(req.source_id.as_deref(), req.rel_path.as_deref())?;
         let corpus = handle.read();
+        let source = corpus.source.clone();
+        let (doc_id, doc) = locate_doc(&corpus, req.rel_path.as_deref(), req.doc_id)?;
+        let rel_path = doc.rel_path.clone();
 
-        let resolved = resolve_node(&corpus, &req)?;
+        let map = self
+            .registry
+            .mmap_document(&source, &rel_path)
+            .map_err(to_mcp_err)?;
+
+        // No section named: the whole document, as `get_by_path` has always
+        // promised for a path with no `#`. A document read is not a section
+        // access, so neither access signal is bumped.
+        if req.heading_path.is_none() && req.node_id.is_none() {
+            let content =
+                std::str::from_utf8(&map[..]).map_err(|e| mcp_internal(format!("utf8: {e}")))?;
+            let outbound_links = doc
+                .nodes
+                .iter()
+                .flat_map(|n| n.outbound_links.iter())
+                .map(link_info)
+                .collect();
+            let now = crate::config::now_unix_secs();
+            return Ok(Json(SectionResponse {
+                source_id: source.to_string(),
+                rel_path,
+                node_id: doc.roots.first().map(|n| n.0).unwrap_or(0),
+                level: 0,
+                heading_path: Vec::new(),
+                byte_range: [0, map.len() as u32],
+                content: content.to_string(),
+                outbound_links,
+                concept_type: doc.okf_type().map(str::to_string),
+                status: doc.okf_status().map(str::to_string),
+                trust: doc.trust_tier().map(|t| t.as_str().to_string()),
+                age_days: doc.age_days(now),
+                stale: doc.is_declared_stale(now).then_some(true),
+            }));
+        }
+
+        let node = resolve_in_doc(doc, req.heading_path.as_deref(), req.node_id)?;
+        let resolved = ResolvedNode {
+            doc,
+            node,
+            doc_id,
+            node_id: node.id,
+        };
         let range = if req.body_only {
             resolved.node.content_range
         } else {
             resolved.node.byte_range
         };
-
-        let map = self
-            .registry
-            .mmap_document(&source, &req.rel_path)
-            .map_err(to_mcp_err)?;
         let slice = &map[range.start as usize..(range.end as usize).min(map.len())];
         let content = std::str::from_utf8(slice).map_err(|e| mcp_internal(format!("utf8: {e}")))?;
 
@@ -234,32 +321,20 @@ impl LoreServer {
         // reindexes, keyed by (rel_path, heading_path).
         self.registry.bump_access(
             &source,
-            &req.rel_path,
+            &rel_path,
             &resolved.node.path.0,
             crate::config::now_unix_secs(),
         );
 
         Ok(Json(SectionResponse {
-            source_id: corpus.source.to_string(),
-            rel_path: req.rel_path,
+            source_id: source.to_string(),
+            rel_path,
             node_id: resolved.node_id.0,
             level: resolved.node.level,
             heading_path: resolved.node.path.0.clone(),
             byte_range: [range.start, range.end],
             content: content.to_string(),
-            outbound_links: resolved
-                .node
-                .outbound_links
-                .iter()
-                .map(|l| LinkInfo {
-                    target: l.target.clone(),
-                    kind: match l.kind {
-                        LinkKind::Inline => "inline".to_string(),
-                        LinkKind::Wiki => "wiki".to_string(),
-                    },
-                    text: l.text.clone(),
-                })
-                .collect(),
+            outbound_links: resolved.node.outbound_links.iter().map(link_info).collect(),
             concept_type: resolved.doc.okf_type().map(str::to_string),
             status: resolved.doc.okf_status().map(str::to_string),
             trust: resolved.doc.trust_tier().map(|t| t.as_str().to_string()),
@@ -274,97 +349,58 @@ impl LoreServer {
     // ---- search -------------------------------------------------------------
 
     #[tool(
-        description = "BM25 keyword search over heading titles, path segments, and the per-section first-sentence summary. Returns ranked hits with a summary line each, plus a `coverage` verdict: `full` = every query term exists in this corpus, `partial` = some do (see `unmatched_terms`), `none` = the corpus does not contain your vocabulary — treat empty/weak results as authoritative and STOP rather than rephrasing and retrying. Tokens are lowercased; English stopwords and tokens shorter than two characters are skipped. Prefix a token with `-` to exclude any node containing it (e.g., `kafka -lambda`). No phrase or proximity operators. Set `group_by` to `\"doc\"` to collapse same-document hits into one primary plus up to `secondary_limit` (default 3) nested same-document sections — useful for narrow queries that concentrate in a single file. Each hit reports `age_days` (how old the source document is); older documents are likelier stale, so weigh recency and verify before asserting. Pass `stale_after_days` to get a `stale` boolean per hit instead of reasoning about the age yourself — and note that a hit whose author declared an OKF `stale_after` date that has already passed reports `stale: true` regardless. When a document declares a frontmatter `type` or `status`, hits carry them verbatim as `concept_type` and `status` — any value the author uses (e.g. `roadmap`/`archived`; OKF's `draft`/`stable`/`deprecated` is one such convention), so a `status` of `archived`/`deprecated` is a cue to down-weight. `trust` (`human-reviewed` or `machine-confirmed`) appears only when a document carries OKF `verified` provenance; prefer a non-stale hit whose status reads current, and a human-reviewed one when trust is present."
+        description = "BM25 keyword search over heading titles, path segments, and the per-section first-sentence summary. `source_id` is optional: omit it to search every loaded corpus, and read each hit's own `source_id`. Returns ranked hits with a summary line each, plus a `coverage` verdict: `full` = every query term exists in this corpus, `partial` = some do (see `unmatched_terms`), `none` = the corpus does not contain your vocabulary — treat empty/weak results as authoritative and STOP rather than rephrasing and retrying. Tokens are lowercased; English stopwords and tokens shorter than two characters are skipped. Prefix a token with `-` to exclude any node containing it (e.g., `kafka -lambda`). No phrase or proximity operators. Set `group_by` to `\"doc\"` to collapse same-document hits into one primary plus up to `secondary_limit` (default 3) nested same-document sections — useful for narrow queries that concentrate in a single file. Each hit reports `age_days` (how old the source document is); older documents are likelier stale, so weigh recency and verify before asserting. Pass `stale_after_days` to get a `stale` boolean per hit instead of reasoning about the age yourself — and note that a hit whose author declared an OKF `stale_after` date that has already passed reports `stale: true` regardless. When a document declares a frontmatter `type` or `status`, hits carry them verbatim as `concept_type` and `status` — any value the author uses (e.g. `roadmap`/`archived`; OKF's `draft`/`stable`/`deprecated` is one such convention), so a `status` of `archived`/`deprecated` is a cue to down-weight. `trust` (`human-reviewed` or `machine-confirmed`) appears only when a document carries OKF `verified` provenance; prefer a non-stale hit whose status reads current, and a human-reviewed one when trust is present."
     )]
     async fn search(
         &self,
         Parameters(req): Parameters<SearchRequest>,
     ) -> Result<Json<SearchResponse>, McpError> {
-        let handle = self.corpus_handle(&req.source_id)?;
-        let corpus = handle.read();
+        // One corpus when named; every loaded corpus when not. A search that
+        // had to be told where to look failed more often than any other call
+        // in a month of transcripts, and "everything Lore knows" is the
+        // question an unqualified search is asking.
+        let handles: Vec<_> = match &req.source_id {
+            Some(id) => vec![self.corpus_handle(id)?],
+            None => self
+                .registry
+                .ids()
+                .iter()
+                .filter_map(|id| self.registry.get(id))
+                .collect(),
+        };
+        if handles.is_empty() {
+            return Err(mcp_invalid(
+                "no corpus is loaded; call `add_source` first".to_string(),
+            ));
+        }
         let now = crate::config::now_unix_secs();
 
-        let hits = match req.group_by {
-            GroupBy::Section => lore_search::search(&corpus, &req.query, req.limit)
-                .into_iter()
-                .filter_map(|h| {
-                    let doc = corpus.doc(h.doc)?;
-                    let node = doc.node(h.node)?;
-                    let age_days = doc.age_days(now);
-                    Some(SearchHit {
-                        rel_path: doc.rel_path.clone(),
-                        doc_id: h.doc.0,
-                        node_id: h.node.0,
-                        level: node.level,
-                        heading_path: node.path.0.clone(),
-                        summary: node.summary.clone(),
-                        description: doc.description().map(str::to_string),
-                        concept_type: doc.okf_type().map(str::to_string),
-                        status: doc.okf_status().map(str::to_string),
-                        trust: doc.trust_tier().map(|t| t.as_str().to_string()),
-                        age_days,
-                        stale: stale_flag(
-                            doc.is_declared_stale(now),
-                            age_days,
-                            req.stale_after_days,
-                        ),
-                        score: h.score,
-                        secondary_hits: Vec::new(),
-                    })
-                })
-                .collect(),
-            GroupBy::Doc => {
-                lore_search::search_grouped(&corpus, &req.query, req.limit, req.secondary_limit)
-                    .into_iter()
-                    .filter_map(|g| {
-                        let doc = corpus.doc(g.primary.doc)?;
-                        let primary_node = doc.node(g.primary.node)?;
-                        let age_days = doc.age_days(now);
-                        let secondary_hits = g
-                            .secondary
-                            .into_iter()
-                            .filter_map(|s| {
-                                let n = doc.node(s.node)?;
-                                Some(SectionHit {
-                                    node_id: s.node.0,
-                                    level: n.level,
-                                    heading_path: n.path.0.clone(),
-                                    summary: n.summary.clone(),
-                                    score: s.score,
-                                })
-                            })
-                            .collect();
-                        Some(SearchHit {
-                            rel_path: doc.rel_path.clone(),
-                            doc_id: g.primary.doc.0,
-                            node_id: g.primary.node.0,
-                            level: primary_node.level,
-                            heading_path: primary_node.path.0.clone(),
-                            summary: primary_node.summary.clone(),
-                            description: doc.description().map(str::to_string),
-                            concept_type: doc.okf_type().map(str::to_string),
-                            status: doc.okf_status().map(str::to_string),
-                            trust: doc.trust_tier().map(|t| t.as_str().to_string()),
-                            age_days,
-                            stale: stale_flag(
-                                doc.is_declared_stale(now),
-                                age_days,
-                                req.stale_after_days,
-                            ),
-                            score: g.primary.score,
-                            secondary_hits,
-                        })
-                    })
-                    .collect()
-            }
-        };
-
-        let coverage = lore_search::coverage(&corpus, &req.query).into();
+        let mut sources = Vec::with_capacity(handles.len());
+        let mut hits = Vec::new();
+        let mut reports = Vec::with_capacity(handles.len());
+        for handle in &handles {
+            let corpus = handle.read();
+            let source_id = corpus.source.to_string();
+            hits.extend(search_corpus(&corpus, &source_id, &req, now));
+            reports.push(lore_search::coverage(&corpus, &req.query));
+            sources.push(source_id);
+        }
+        if handles.len() > 1 {
+            // Each corpus ranked its own top `limit`; rank the union the
+            // same way and keep the same number.
+            hits.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            hits.truncate(req.limit);
+        }
 
         Ok(Json(SearchResponse {
-            source_id: corpus.source.to_string(),
+            source_id: (sources.len() == 1).then(|| sources[0].clone()),
+            sources,
             query: req.query,
-            coverage,
+            coverage: merge_coverage(reports),
             hits,
         }))
     }
@@ -595,7 +631,7 @@ impl LoreServer {
     // ---- get_by_path --------------------------------------------------------
 
     #[tool(
-        description = "Fetch a section by a single qualified path string of the form `path/to/file.md#Heading > Subheading`. Convenient wrapper around `get_section` for clients that already carry paths around."
+        description = "Fetch a section by a single qualified path string of the form `path/to/file.md#Heading > Subheading`; without the `#` part it returns the whole document. The path is also accepted under the name `rel_path`. `source_id` is optional as for `get_section`. Convenient wrapper around `get_section` for clients that already carry paths around."
     )]
     async fn get_by_path(
         &self,
@@ -604,7 +640,8 @@ impl LoreServer {
         let (rel, heading) = parse_qualified_path(&req.qualified_path);
         let base = GetSectionRequest {
             source_id: req.source_id.clone(),
-            rel_path: rel.to_string(),
+            rel_path: Some(rel.to_string()),
+            doc_id: None,
             heading_path: heading,
             node_id: None,
             body_only: req.body_only,
@@ -749,20 +786,166 @@ fn resolve_in_doc<'a>(
     ))
 }
 
-/// Full resolution for `get_section`-style requests: both the enclosing
-/// document and the node within it.
-fn resolve_node<'a>(
+/// The document a `get_section`-style request names, by either spelling a
+/// caller has: the `rel_path` every tool uses, or the `doc_id` a search hit
+/// carries. Both given and agreeing is fine; disagreeing is a contradictory
+/// request and is refused rather than guessed.
+fn locate_doc<'a>(
     corpus: &'a lore_index::CorpusIndex,
-    req: &GetSectionRequest,
-) -> Result<ResolvedNode<'a>, McpError> {
-    let (doc_id, doc) = find_doc(corpus, &req.source_id, &req.rel_path)?;
-    let node = resolve_in_doc(doc, req.heading_path.as_deref(), req.node_id)?;
-    Ok(ResolvedNode {
-        doc,
-        node,
-        doc_id,
-        node_id: node.id,
-    })
+    rel_path: Option<&str>,
+    doc_id: Option<u32>,
+) -> Result<(DocId, &'a DocumentIndex), McpError> {
+    let source = corpus.source.to_string();
+    match (rel_path, doc_id) {
+        (Some(rel), None) => find_doc(corpus, &source, rel),
+        (None, Some(id)) => corpus
+            .doc(DocId(id))
+            .map(|d| (DocId(id), d))
+            .ok_or_else(|| mcp_invalid(format!("doc_id {id} out of range in source `{source}`"))),
+        (Some(rel), Some(id)) => {
+            let (found, doc) = find_doc(corpus, &source, rel)?;
+            if found.0 != id {
+                return Err(mcp_invalid(format!(
+                    "`rel_path` {rel} is doc_id {}, not {id}",
+                    found.0
+                )));
+            }
+            Ok((found, doc))
+        }
+        (None, None) => Err(mcp_invalid(
+            "one of `rel_path` or `doc_id` is required".to_string(),
+        )),
+    }
+}
+
+/// One corpus's ranked hits for `req`, each stamped with the corpus it came
+/// from. The body of `search` from before a search could span corpora.
+fn search_corpus(
+    corpus: &lore_index::CorpusIndex,
+    source_id: &str,
+    req: &SearchRequest,
+    now: u64,
+) -> Vec<SearchHit> {
+    match req.group_by {
+        GroupBy::Section => lore_search::search(corpus, &req.query, req.limit)
+            .into_iter()
+            .filter_map(|h| {
+                let doc = corpus.doc(h.doc)?;
+                let node = doc.node(h.node)?;
+                let age_days = doc.age_days(now);
+                Some(SearchHit {
+                    source_id: source_id.to_string(),
+                    rel_path: doc.rel_path.clone(),
+                    doc_id: h.doc.0,
+                    node_id: h.node.0,
+                    level: node.level,
+                    heading_path: node.path.0.clone(),
+                    summary: node.summary.clone(),
+                    description: doc.description().map(str::to_string),
+                    concept_type: doc.okf_type().map(str::to_string),
+                    status: doc.okf_status().map(str::to_string),
+                    trust: doc.trust_tier().map(|t| t.as_str().to_string()),
+                    age_days,
+                    stale: stale_flag(doc.is_declared_stale(now), age_days, req.stale_after_days),
+                    score: h.score,
+                    secondary_hits: Vec::new(),
+                })
+            })
+            .collect(),
+        GroupBy::Doc => {
+            lore_search::search_grouped(corpus, &req.query, req.limit, req.secondary_limit)
+                .into_iter()
+                .filter_map(|g| {
+                    let doc = corpus.doc(g.primary.doc)?;
+                    let primary_node = doc.node(g.primary.node)?;
+                    let age_days = doc.age_days(now);
+                    let secondary_hits = g
+                        .secondary
+                        .into_iter()
+                        .filter_map(|s| {
+                            let n = doc.node(s.node)?;
+                            Some(SectionHit {
+                                node_id: s.node.0,
+                                level: n.level,
+                                heading_path: n.path.0.clone(),
+                                summary: n.summary.clone(),
+                                score: s.score,
+                            })
+                        })
+                        .collect();
+                    Some(SearchHit {
+                        source_id: source_id.to_string(),
+                        rel_path: doc.rel_path.clone(),
+                        doc_id: g.primary.doc.0,
+                        node_id: g.primary.node.0,
+                        level: primary_node.level,
+                        heading_path: primary_node.path.0.clone(),
+                        summary: primary_node.summary.clone(),
+                        description: doc.description().map(str::to_string),
+                        concept_type: doc.okf_type().map(str::to_string),
+                        status: doc.okf_status().map(str::to_string),
+                        trust: doc.trust_tier().map(|t| t.as_str().to_string()),
+                        age_days,
+                        stale: stale_flag(
+                            doc.is_declared_stale(now),
+                            age_days,
+                            req.stale_after_days,
+                        ),
+                        score: g.primary.score,
+                        secondary_hits,
+                    })
+                })
+                .collect()
+        }
+    }
+}
+
+/// Coverage across several corpora: the best level any corpus reached, the
+/// union of matched terms, and only the terms *no* corpus had as unmatched.
+/// A term one corpus lacks and another holds is matched, not missing.
+fn merge_coverage(reports: Vec<lore_search::CoverageReport>) -> SearchCoverage {
+    let mut merged: Option<SearchCoverage> = None;
+    for r in reports {
+        let c: SearchCoverage = r.into();
+        merged = Some(match merged {
+            None => c,
+            Some(mut m) => {
+                m.level = match (m.level, c.level) {
+                    (CoverageLevel::Full, _) | (_, CoverageLevel::Full) => CoverageLevel::Full,
+                    (CoverageLevel::Partial, _) | (_, CoverageLevel::Partial) => {
+                        CoverageLevel::Partial
+                    }
+                    _ => CoverageLevel::None,
+                };
+                for t in c.matched_terms {
+                    if !m.matched_terms.contains(&t) {
+                        m.matched_terms.push(t);
+                    }
+                }
+                m.unmatched_terms.retain(|t| c.unmatched_terms.contains(t));
+                m
+            }
+        });
+    }
+    let mut out = merged.unwrap_or(SearchCoverage {
+        level: CoverageLevel::None,
+        matched_terms: Vec::new(),
+        unmatched_terms: Vec::new(),
+    });
+    out.unmatched_terms
+        .retain(|t| !out.matched_terms.contains(t));
+    out
+}
+
+fn link_info(l: &lore_core::Link) -> LinkInfo {
+    LinkInfo {
+        target: l.target.clone(),
+        kind: match l.kind {
+            LinkKind::Inline => "inline".to_string(),
+            LinkKind::Wiki => "wiki".to_string(),
+        },
+        text: l.text.clone(),
+    }
 }
 
 /// Compute the `stale` field for a hit. Two independent triggers:
