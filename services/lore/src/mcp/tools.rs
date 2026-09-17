@@ -264,13 +264,24 @@ pub(crate) fn build_corpus_map(
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GetSectionRequest {
-    pub source_id: String,
-    /// Either `rel_path` + (`heading_path` or `node_id`) must be supplied.
-    pub rel_path: String,
-    /// Full heading ancestry, e.g. `["Architecture", "Caching"]`.
+    /// The corpus to read from. Optional: with one corpus loaded it is that
+    /// one, and with several it is whichever holds `rel_path` when exactly
+    /// one does. Pass it to disambiguate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    /// The document, by file path. One of `rel_path` or `doc_id` is required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rel_path: Option<String>,
+    /// The document, by the `doc_id` a search hit carries — so a hit can be
+    /// fetched exactly as it was returned, without translating it back into
+    /// a path first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_id: Option<u32>,
+    /// Full heading ancestry, e.g. `["Architecture", "Caching"]`. Omit both
+    /// `heading_path` and `node_id` to get the whole document.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heading_path: Option<Vec<String>>,
-    /// Direct node id, if known.
+    /// Direct node id, if known (a search hit's `node_id`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<u32>,
     /// When true, exclude the heading line itself (body only).
@@ -338,7 +349,10 @@ pub enum GroupBy {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SearchRequest {
-    pub source_id: String,
+    /// The corpus to search. Omit to search every loaded corpus; each hit
+    /// then names its own `source_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
     pub query: String,
     /// Section mode: max sections returned. Doc mode: max documents
     /// returned (each with its own secondary list).
@@ -368,6 +382,9 @@ fn default_secondary_limit() -> usize {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SearchHit {
+    /// The corpus this hit came from — pass it back with `doc_id` or
+    /// `rel_path` to fetch the section.
+    pub source_id: String,
     pub rel_path: String,
     pub doc_id: u32,
     pub node_id: u32,
@@ -459,7 +476,13 @@ impl From<lore_search::CoverageReport> for SearchCoverage {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SearchResponse {
-    pub source_id: String,
+    /// The one corpus searched, when there was one. Absent when the request
+    /// named no `source_id` and several corpora were searched — read each
+    /// hit's `source_id` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    /// Every corpus the search covered, in the order they were searched.
+    pub sources: Vec<String>,
     pub query: String,
     /// Whether the corpus contains the query's vocabulary at all. Read this
     /// before trusting an empty or weak `hits` list: `none` means stop, not
@@ -476,7 +499,9 @@ pub struct SearchResponse {
 pub struct AddSourceRequest {
     /// Absolute path to the corpus root directory. Lore will run a full index
     /// pass on it and register the result under `source_id` (defaulting to
-    /// the directory basename).
+    /// the directory basename). `root_dir` is accepted as a spelling — it is
+    /// what `list_sources` calls the same value, and what callers reach for.
+    #[serde(alias = "root_dir")]
     pub root: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_id: Option<String>,
@@ -728,9 +753,14 @@ pub(crate) fn frontmatter_matches(
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GetByPathRequest {
-    pub source_id: String,
+    /// The corpus to read from. Optional, resolved as `get_section` does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
     /// Qualified path of the form `path/to/file.md#Heading > Subheading`.
     /// The `#` portion is optional — omit to return the whole document.
+    /// Also accepted under the name `rel_path`, which is what every other
+    /// tool calls a file path.
+    #[serde(alias = "rel_path")]
     pub qualified_path: String,
     #[serde(default)]
     pub body_only: bool,
@@ -874,5 +904,69 @@ mod tests {
         // With max_depth 2 the child is included.
         let deep = build_corpus_map(&c, None, Some(2), 0);
         assert_eq!(deep.documents[0].headings[0].children.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod caller_shapes {
+    //! The request shapes agents actually send, lifted verbatim from Claude
+    //! Code transcripts on 2026-09-16. Eleven of thirteen failed lore calls
+    //! in a month were schema refusals of one of these — the same few
+    //! guesses, made independently by different sessions, which makes them
+    //! the tool surface's problem and not the caller's. Each must deserialize.
+    use super::*;
+    use serde_json::{from_value, json};
+
+    #[test]
+    fn search_without_a_source_id() {
+        let req: SearchRequest = from_value(json!({"query": "Grafana"})).unwrap();
+        assert!(req.source_id.is_none());
+        assert_eq!(req.query, "Grafana");
+    }
+
+    #[test]
+    fn get_section_by_the_ids_a_search_hit_carries() {
+        let req: GetSectionRequest =
+            from_value(json!({"source_id": "tokamak-docs", "doc_id": 74, "node_id": 8})).unwrap();
+        assert_eq!(req.doc_id, Some(74));
+        assert_eq!(req.node_id, Some(8));
+        assert!(req.rel_path.is_none());
+    }
+
+    #[test]
+    fn get_by_path_under_the_family_name_for_a_path() {
+        let req: GetByPathRequest = from_value(json!({
+            "source_id": "tokamak-docs",
+            "rel_path": "crates/tokamak-acquisitions.md"
+        }))
+        .unwrap();
+        assert_eq!(req.qualified_path, "crates/tokamak-acquisitions.md");
+    }
+
+    #[test]
+    fn get_by_path_without_a_source_id() {
+        let req: GetByPathRequest =
+            from_value(json!({"qualified_path": "crates/tokamak-overlay-snmp.md"})).unwrap();
+        assert!(req.source_id.is_none());
+    }
+
+    #[test]
+    fn add_source_with_root_dir() {
+        let req: AddSourceRequest = from_value(json!({
+            "root_dir": "/Users/x/Workspace/Tokamak/docs",
+            "source_id": "tokamak-docs",
+            "rebuild": true
+        }))
+        .unwrap();
+        assert_eq!(req.root, "/Users/x/Workspace/Tokamak/docs");
+        assert!(req.rebuild);
+    }
+
+    /// A bare `path` stays refused: the naming rule is that a file path is
+    /// `rel_path`, and accepting a third spelling would teach callers a
+    /// fourth.
+    #[test]
+    fn a_bare_path_is_still_not_a_field() {
+        assert!(from_value::<GetByPathRequest>(json!({"path": "docs/intro.md"})).is_err());
     }
 }
