@@ -26,6 +26,7 @@ lore/
 ## Commands
 
 ```bash
+scripts/gate.sh                                # the merge gate: fmt, clippy, test, bench-compile (what CI and the escapement kernel run)
 cargo check --workspace                        # fast compile check
 cargo test --workspace                         # all unit, integration, property tests
 cargo clippy --workspace --all-targets -- -D warnings
